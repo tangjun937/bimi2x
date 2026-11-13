@@ -59,6 +59,32 @@ def _is_promo_line(line: str) -> bool:
     return False
 
 
+def _strip_attribution(text: str) -> str:
+    """去掉英文开头「据XX报道」这类信源引述，保留时间、直接说事件。
+
+    例：According to the \"Jerusalem Post\" report on Nov 13, ... → On Nov 13, ...
+        According to Reuters, oil rose 2% → Oil rose 2%.
+    """
+    s = (text or "").strip()
+    # 1) According to \"X\" report(s) → 删信源，保留后面 on 时间
+    s = re.sub(
+        r'^(?:According to|Per|As reported by|As per)\s+(?:the\s+)?'
+        r'[\"\u201c\u2018][^\"\u201d\u2019]*[\"\u201d\u2019]\s+report(?:s)?\b\.?\s*',
+        '', s, flags=re.IGNORECASE)
+    # 2) According to X report/reported/news/media/outlet → 删信源词，保留 on 时间
+    s = re.sub(
+        r'^(?:According to|Per|As reported by|As per)\s+(?:the\s+)?'
+        r'[A-Za-z0-9.&\u2019\' ]*?\b(?:report(?:s|ed)?|news|media|outlet|agency)\b\.?\s*',
+        '', s, flags=re.IGNORECASE)
+    # 3) 剩余纯信源（无 report 词）→ 删到第一个逗号/句号
+    s = re.sub(
+        r'^(?:According to|Per|As reported by|As per)\s+[^,.]+[,.]\s*',
+        '', s, flags=re.IGNORECASE)
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+    return s.strip()
+
+
 SYSTEM_PROMPT = (
     "You are a professional news translator. Translate the Chinese social media post "
     "into concise, natural English suitable for X (Twitter). Rules: keep the meaning "
@@ -101,6 +127,8 @@ class Translator:
             out = self._google(text)
 
         out = BLANK.sub("\n\n", out).strip()
+        if self.cfg.get("cleanup.strip_attribution", True):
+            out = _strip_attribution(out)
         if tags:
             out = f"{out}\n\n{' '.join(dict.fromkeys(tags))}".strip()
         prefix = self.cfg.get("translate.prefix", "") or ""
