@@ -70,6 +70,8 @@ translate:
 
 # 原文清洗：频道尾巴的推广/投稿联系方式不要带到 X
 cleanup:
+  # 去掉每帖第一行的【标题/抬头】，只发正文（BIMI_CHS 快讯格式：【标题】+ 正文）
+  remove_heading: true
   remove_patterns:
     - '关注[^\n]*?频道[^\n]*'
     - '投稿\s*[:：]\s*@\w+'
