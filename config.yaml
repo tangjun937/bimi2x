@@ -20,7 +20,8 @@ publish:
   dry_run: false
   # buffer | command | http | dry_run
   target: "buffer"
-  max_len: 280
+  # jianglin124 开了蓝 V（X Premium），单条上限 25000 字，不再截断
+  max_len: 25000
   # 发文是否带上 Telegram 原文链接（false = 只发正文，不带链接）
   include_source_link: false
 
