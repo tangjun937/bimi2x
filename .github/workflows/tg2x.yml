@@ -7,10 +7,14 @@ on:
     - cron: "0 * * * *" # 每小时一次（UTC 整点）。私有仓库免费额度有限，小时级是安全线
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "只跑不发（dry run），用来验证链路"
-        type: boolean
-        default: false
+      mode:
+        description: '运行模式'
+        type: choice
+        default: run
+        options:
+          - run       # 正常跑（有新帖才发，最多2条）
+          - dry_run   # 只打印不发
+          - preview   # 发最新一条给我预览
 
 permissions:
   contents: read
@@ -52,12 +56,20 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: |
           mkdir -p data
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "== dry run =="
-            python run.py once --dry-run
-          else
-            python run.py once
-          fi
+          case "${{ inputs.mode || 'run' }}" in
+            dry_run)
+              echo "== dry run =="
+              python run.py once --dry-run
+              ;;
+            preview)
+              echo "== 预览：释放最新一条并发送 =="
+              python -c "import sqlite3; c=sqlite3.connect('data/tg2x.sqlite3'); c.execute('DELETE FROM messages WHERE message_id=(SELECT MAX(message_id) FROM messages)'); c.commit(); print('已释放最新一条')"
+              python run.py once
+              ;;
+            *)
+              python run.py once
+              ;;
+          esac
 
       - name: 保存去重状态
         if: always()
