@@ -65,9 +65,10 @@ class Pipeline:
             return result
 
         fresh = [p for p in posts if not self.store.seen(p.channel, p.message_id)]
-        fresh.sort(key=lambda p: p.message_id)
+        # 从新到旧排序：只处理最新的几条，不追旧帖
+        fresh.sort(key=lambda p: p.message_id, reverse=True)
         if len(fresh) > self.max_per_cycle:
-            log.warning("本轮新帖 %d 条，超过上限 %d，只处理最早的 %d 条",
+            log.warning("本轮新帖 %d 条，超过上限 %d，只处理最新的 %d 条",
                         len(fresh), self.max_per_cycle, self.max_per_cycle)
             fresh = fresh[: self.max_per_cycle]
 
