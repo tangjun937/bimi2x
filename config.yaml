@@ -1,7 +1,7 @@
 # ===== Telegram 频道 -> 英文翻译 -> Buffer -> X 自动搬运 =====
 
 # 你关注的频道（不带 @）
-channel: "ONEMILLION_AI"
+channel: "BIMI_CHS"
 
 fetch:
   # web      : 抓 https://t.me/s/<channel> 网页版，零凭证，30s 轮询（你不是频道主，只能用这个或 telethon）
@@ -70,26 +70,23 @@ translate:
 
 # 原文清洗：频道尾巴的推广/投稿联系方式不要带到 X
 cleanup:
-  # 去掉每帖第一行的【标题/抬头】，只发正文（BIMI_CHS 快讯格式：【标题】+ 正文；ONEMILLION_AI 无【】，改由 strip_heading 处理）
-  remove_heading: false
-  # 去掉快讯开头用 <b>/<strong> 加粗的标题行（ONEMILLION_AI 每条快讯是「加粗标题 + 正文」），只发正文
-  strip_heading: true
+  # 去掉每帖第一行的【标题/抬头】，只发正文（BIMI_CHS 快讯格式：【标题】+ 正文）
+  remove_heading: true
+  # 去掉快讯开头用 <b>/<strong> 加粗的标题行（仅 ONEMILLION_AI 格式需要，BIMI_CHS 关闭）
+  strip_heading: false
   remove_patterns:
     - '关注[^\n]*?频道[^\n]*'
     - '投稿\s*[:：]\s*@\w+'
     - '商务合作\s*[:：][^\n]*'
     - '^\s*[➡️👉]\s*[^\n]*$'
     - '^\s*@\w+\s*$'
-    # ONEMILLION_AI 每条尾巴：单独一行「信源」+ 固定频道引流行「动察 Beating 频道 · 动察 Beating 交流群」
-    - '^\s*信源\s*$'
-    - '动察\s*Beating[^\n]*'
   # 命中任一词就跳过不发（X 对赌博/灰产/涉黄内容有限制，建议按需打开）
   block_keywords: []
 
   # 广告/引流贴识别：命中任意「强广告词」整条跳过；「弱广告词」累计 2 个也跳过
   # 另外自动识别：t.me 邀请链接、纯链接堆、⚡️⚡️⚡️ 刷屏层
-  # 注意：这是 AI 科技频道，正文常出现「注册/点击/代理/入口」等词（Agent=代理），
-  # 所以弱词只保留明确的推广话术，避免误杀正常新闻
+  # 注意：这是财经频道，「博彩/彩票/开奖」这类词会出现在正经新闻里（澳门博彩收入等），
+  # 所以只保留「推广话术」类词，避免误杀
   ad_keywords:
     - "返水"
     - "返佣"
