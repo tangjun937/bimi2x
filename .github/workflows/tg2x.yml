@@ -68,8 +68,7 @@ jobs:
               ;;
             preview)
               echo "== 预览：释放最新一条并发送 =="
-              python -c "import sqlite3; c=sqlite3.connect('data/tg2x.sqlite3'); c.execute('DELETE FROM messages WHERE message_id=(SELECT MAX(message_id) FROM messages)'); c.commit(); print('已释放最新一条')"
-              python run.py once
+              python run.py preview
               ;;
             *)
               python run.py once
