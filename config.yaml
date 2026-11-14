@@ -11,6 +11,9 @@ channels:
   - name: "BEST_AI_TOOLS"
     lang: "en"
     rewrite: false
+  - name: "AIPOST"
+    lang: "en"
+    rewrite: false
 
 fetch:
   # web      : 抓 https://t.me/s/<channel> 网页版，零凭证，30s 轮询（你不是频道主，只能用这个或 telethon）
@@ -85,6 +88,11 @@ writer:
   api_key_env: "DEEPSEEK_API_KEY"
   temperature: 0.7
   timeout: 60
+
+# 发文优先级排序
+rank:
+  # true = 主题优先(github项目 > 传统金融含股市 > 虚拟货币)；false = 媒体优先(视频>图文>无图冲突>普通)
+  topic_first: true
 
 # 原文清洗：频道尾巴的推广/投稿联系方式不要带到 X
 cleanup:
