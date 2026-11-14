@@ -72,7 +72,7 @@ translate:
   min_interval: 1.5
   # 主引擎被限流时的备用引擎：留空 = 不启用；"mymemory" = 用 MyMemory 免费接口应急
   fallback: ""
-  prefix: "FinBrief Alert: "
+  prefix: ""
   # 话题标签是否抽出到末尾。false = 留在原位由翻译引擎处理（推荐）
   keep_hashtags: false
   strip_urls_from_translate: true
