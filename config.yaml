@@ -177,7 +177,7 @@ storage:
 
 # 跑完通过你的 bot 给自己发一条回执（不是用来读频道的，bot 进不了别人的频道）
 notify:
-  enabled: false
+  enabled: true
   bot_token_env: "TG_BOT_TOKEN"
   chat_id_env: "TG_CHAT_ID"
   on_success: true
