@@ -100,6 +100,8 @@ cleanup:
   content_filter: true
   # 只搬带图/视频的内容，纯文字长文跳过。bimi2x 关闭（AI 新闻以文字为主）
   media_only: false
+  # 新鲜度过滤：只发最近 N 小时内的帖子，超过的旧帖直接跳过（防止频道更新慢时补发旧闻）
+  max_age_hours: 24
   # 去掉每帖第一行的【标题/抬头】，只发正文（仅 BIMI_CHS 格式需要）
   remove_heading: false
   # 去掉快讯开头用 <b>/<strong> 加粗的标题行（ONEMILLION_AI 每条快讯是「加粗标题 + 正文」）
