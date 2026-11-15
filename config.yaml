@@ -98,6 +98,8 @@ rank:
 cleanup:
   # 内容合规过滤（中国政治敏感 + 关于中国只发 AI 类）。bimi2x 开启：不发关于中国时政新闻
   content_filter: true
+  # 只搬带图/视频的内容，纯文字长文跳过。bimi2x 关闭（AI 新闻以文字为主）
+  media_only: false
   # 去掉每帖第一行的【标题/抬头】，只发正文（仅 BIMI_CHS 格式需要）
   remove_heading: false
   # 去掉快讯开头用 <b>/<strong> 加粗的标题行（ONEMILLION_AI 每条快讯是「加粗标题 + 正文」）
