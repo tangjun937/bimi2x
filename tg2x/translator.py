@@ -142,6 +142,24 @@ class Translator:
         prefix = self.cfg.get("translate.prefix", "") or ""
         return f"{prefix}{out}".strip()
 
+    def _clean_en(self, text: str) -> str:
+        """英文频道尾巴清理：去 Source/来源 行、去 URL、去 Binance 等推广行。"""
+        lines = [ln.strip() for ln in text.split("\n")]
+        out: list[str] = []
+        for ln in lines:
+            if not ln:
+                continue
+            if re.match(r"^(Source|Via|来源)\s*[:：]", ln, re.IGNORECASE):
+                continue
+            if re.search(r"binance", ln, re.IGNORECASE):
+                continue
+            if URL_RE.fullmatch(ln):
+                continue  # 纯链接行
+            out.append(ln)
+        text = "\n".join(out).strip()
+        text = URL_RE.sub("", text).strip()  # 去掉行内残留 URL
+        return BLANK.sub("\n\n", text).strip()
+
     def _clean(self, text: str) -> str:
         """去掉频道推广尾巴 / 投稿联系方式等噪音。"""
         if self.cfg.get("cleanup.remove_heading", False):
