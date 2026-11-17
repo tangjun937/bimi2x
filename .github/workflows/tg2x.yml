@@ -6,7 +6,7 @@ on:
   schedule:
     # 每 2 小时一轮（UTC 整点）。
     # 注意：GitHub 的定时任务是「尽力而为」，高峰期会延迟甚至漏跑，不能保证准点。
-    - cron: "0 */2 * * *"
+    - cron: "0 */4 * * *"
   # 备用触发：外部定时器 POST 到 dispatches 端点，秒级准点、不排队。
   repository_dispatch:
     types: [run]
