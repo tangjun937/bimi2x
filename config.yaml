@@ -22,7 +22,7 @@ fetch:
   backend: "web"
   interval_seconds: 30
   # 每轮最多发多少篇（合并所有频道新帖后，按影响排序取前 N 篇）
-  max_per_cycle: 1
+  max_per_cycle: 4
   request_timeout: 20
 
 publish:
@@ -46,8 +46,8 @@ publish:
     # shareNow（立即发）| addToQueue（进 Buffer 队列的下一个空档）| customScheduled
     mode: "shareNow"
     # 同批次的第 2 条起，自动排到 60 分钟后再发（间隔至少 60 分钟）
-    spacing_min_minutes: 60
-    spacing_max_minutes: 60
+    spacing_min_minutes: 100
+    spacing_max_minutes: 100
     # telegram_url : 直接把 Telegram CDN 图片链接传给 Buffer（零成本，默认）
     # none         : 只发文字
     media: "telegram_url"
