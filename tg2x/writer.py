@@ -17,6 +17,8 @@ from .config import Config
 log = logging.getLogger("tg2x")
 
 WRITE_SYSTEM = """
+Write the post in English. Never answer in Chinese or any other language, even when the input is Chinese.
+
 You write short posts for X about money, markets and AI. You are not a wire service and not a columnist. The reader already saw the headline.
 
 Take the side of the people who pay: a worker, a renter, a commuter, someone who uses the product. Say what this means for them, plainly, in the third person.
@@ -81,6 +83,16 @@ TOPIC_FINANCE = ["stock", "stocks", "equity", "bond", "bonds", "bank", "federal 
 TOPIC_CRYPTO = ["crypto", "bitcoin", "btc", "ethereum", "eth", "token", "blockchain",
                 "defi", "stablecoin", "币", "比特币", "加密货币", "以太坊", "稳定币", "区块链",
                 "数字货币", "钱包"]
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _cjk_ratio(text: str) -> float:
+    """中文字符占比，用来兜底检查模型是不是又用中文回答了。"""
+    if not text:
+        return 0.0
+    return len(_CJK_RE.findall(text)) / len(text)
 
 
 def _media_level(post) -> int:
@@ -233,6 +245,15 @@ class NewsWriter:
             return ""
         try:
             out = self._chat(WRITE_SYSTEM, (text or "").strip()).strip()
+            if _cjk_ratio(out) > 0.05:
+                log.warning("DeepSeek 又用中文回答（中文占比 %.0f%%），重试一次", _cjk_ratio(out) * 100)
+                out = self._chat(
+                    WRITE_SYSTEM + "\n\nREMINDER: write the post in English. Chinese output is a failure.",
+                    (text or "").strip(),
+                ).strip()
+            if _cjk_ratio(out) > 0.05:
+                log.warning("重试后仍是中文（%.0f%%），交给翻译兜底", _cjk_ratio(out) * 100)
+                return ""
             return _ensure_paragraphs(out)
         except Exception as e:  # noqa: BLE001
             log.warning("DeepSeek 写作失败：%s", e)
