@@ -50,7 +50,7 @@ publish:
     spacing_max_minutes: 100
     # telegram_url : 直接把 Telegram CDN 图片链接传给 Buffer（零成本，默认）
     # none         : 只发文字
-    media: "telegram_url"
+    media: "none"
     max_assets: 4
     timeout: 30
 
