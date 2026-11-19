@@ -171,7 +171,7 @@ cleanup:
 storage:
   data_dir: "data"
   # 原文 + 图片归档到本地，保证"复制下来"这一步不丢东西
-  archive_media: true
+  archive_media: false
   # 每频道只保留最近多少条去重记录，更早的自动删除（防止库无限增长）。0 = 不清理
   prune_keep: 10
 
