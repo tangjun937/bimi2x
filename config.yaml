@@ -17,8 +17,10 @@ fetch:
   # bot      : 仅频道管理员可用
   backend: "hot"
   interval_seconds: 30
-  # 每轮最多发多少篇（合并所有频道新帖后，按影响排序取前 N 篇）
-  max_per_cycle: 4
+  # 每次运行只发 1 篇（抓一条、当场发；重复就跳过换下一条）
+  max_per_cycle: 1
+  # 最多尝试多少条候选：前几条撞重复也还能换一条发出去
+  max_tries: 8
   request_timeout: 20
 
 publish:
