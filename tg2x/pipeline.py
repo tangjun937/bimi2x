@@ -67,6 +67,8 @@ class Pipeline:
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
         # 默认 false = 保留给后续轮次继续发；dogs_vd/catx1t 设 true。
         self.drop_overflow = bool(cfg.get("cleanup.drop_overflow", False))
+        # 记录保留天数：热点模式写过的内容只保留 N 天，过期删除。0 = 不清理
+        self.retention_days = int(cfg.get("cleanup.retention_days", 0) or 0)
 
     @staticmethod
     def _parse_channels(cfg: Config) -> list[dict]:
@@ -168,6 +170,10 @@ class Pipeline:
             if removed:
                 log.info("清理去重库：删除 %d 条旧记录（每频道保留最近 %d 条）",
                          removed, self.prune_keep)
+        if self.retention_days > 0:
+            purged = self.store.purge_older_than(self.retention_days)
+            if purged:
+                log.info("过期清理：删除 %d 条超过 %d 天的记录", purged, self.retention_days)
         self.notifier.report(result, self._items)
         return result
 
@@ -186,7 +192,8 @@ class Pipeline:
 
         boot_key = f"boot_done:{ch['name']}"
         first_run = self.store.get_meta(boot_key) != "1"
-        if first_run and not self.cfg.get("publish.existing_on_boot", False):
+        if (first_run and not self.cfg.get("publish.existing_on_boot", False)
+                and not getattr(fetcher, "skip_baseline", False)):
             for p in posts:
                 self.store.record(p, status="skipped")
                 self.store.archive(p, {"reason": "boot-baseline"})
@@ -197,7 +204,8 @@ class Pipeline:
             return []
 
         fresh = [p for p in posts if not self.store.seen(p.channel, p.message_id)]
-        fresh.sort(key=lambda p: p.message_id, reverse=True)
+        if not getattr(fetcher, "preserve_order", False):
+            fresh.sort(key=lambda p: p.message_id, reverse=True)
         return fresh
 
     def _is_stale(self, post: TgPost) -> bool:
