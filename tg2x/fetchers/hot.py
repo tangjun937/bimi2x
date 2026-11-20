@@ -237,7 +237,7 @@ class HotFetcher:
             # 重要人物对 AI 的表态（马斯克/特朗普等）
             + self._google_news("Musk AI OR Trump AI OR Altman AI when:2d", 28.0)
             # AI 交易与监管：订单、垄断、关税、裁员
-            self._google_news("AI deal OR AI regulation OR AI layoffs OR AI capex when:2d", 26.0)
+            + self._google_news("AI deal OR AI regulation OR AI layoffs OR AI capex when:2d", 26.0)
         )
         techcrunch = self._rss(
             "https://techcrunch.com/category/artificial-intelligence/feed/", 24.0, "techcrunch"
