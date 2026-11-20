@@ -52,6 +52,8 @@ class Pipeline:
         self.notifier = TgNotifier(cfg)
         self._items: list[dict] = []
         self.max_per_cycle = int(cfg.get("fetch.max_per_cycle", 5) or 5)
+        # 一次运行最多尝试多少条候选：碰到重复就换下一条，直到发够 max_per_cycle 篇
+        self.max_tries = int(cfg.get("fetch.max_tries", self.max_per_cycle) or self.max_per_cycle)
         self.archive_media = bool(cfg.get("storage.archive_media", True))
         self.dedup_enabled = bool(cfg.get("cleanup.dedup_enabled", True))
         self.dedup_window = int(cfg.get("cleanup.dedup_window", 10) or 10)
@@ -138,26 +140,32 @@ class Pipeline:
             ordered = self.writer.rank(posts, topic_first=self.topic_first)
             if len(ordered) == len(posts):
                 ranked = [(ch_map[id(p)], p) for p in ordered]
-        if len(ranked) > self.max_per_cycle:
-            overflow = ranked[self.max_per_cycle:]
-            ranked = ranked[: self.max_per_cycle]
+
+        # 候选池：一次只发 max_per_cycle 篇，但最多尝试 max_tries 条——
+        # 遇到重复（关键词去重命中）就跳过，换下一条，保证每条都是当场抓到的。
+        try_limit = min(len(ranked), max(self.max_tries, self.max_per_cycle))
+        planned = ranked[:try_limit]
+        if len(ranked) > try_limit:
+            overflow = ranked[try_limit:]
             if self.drop_overflow:
-                log.info("本轮 %d 篇新帖，按优先级排序后只发前 %d 篇，其余 %d 篇去除",
-                         len(ranked) + len(overflow), self.max_per_cycle, len(overflow))
+                log.info("本轮 %d 篇候选，只尝试前 %d 篇，其余 %d 篇去除",
+                         len(ranked), try_limit, len(overflow))
                 for _ch, p in overflow:
                     self.store.record(p, "skipped")
                     self.store.archive(p, {"reason": "overflow"})
                     result["skipped"] += 1
             else:
-                log.info("本轮 %d 篇新帖，只发前 %d 篇，其余 %d 篇留待后续轮次",
-                         len(ranked) + len(overflow), self.max_per_cycle, len(overflow))
+                log.info("本轮 %d 篇候选，只尝试前 %d 篇，其余 %d 篇留待后续轮次",
+                         len(ranked), try_limit, len(overflow))
 
-        # 3. 逐篇处理（第 1 篇立即发，第 2 篇起排到 60 分钟后）
-        for idx, (ch, post) in enumerate(ranked):
+        # 3. 逐条处理：发够 max_per_cycle 篇就停；重复的跳过换下一条
+        for ch, post in planned:
+            if result["published"] >= self.max_per_cycle:
+                break
             result["new"] += 1
             status = "failed"
             try:
-                status = self._handle(post, ch, publish=publish, position=idx)
+                status = self._handle(post, ch, publish=publish, position=0)
             except Exception as e:  # noqa: BLE001
                 log.exception("处理失败 %s: %s", post.key, e)
                 self.store.mark(post.channel, post.message_id, "failed", error=str(e)[:500])
