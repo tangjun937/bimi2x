@@ -27,19 +27,47 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-# 只保留金融 / AI 相关（HN 首页噪音最大，必须过滤；RSS 查询本身已限定）
-_RELEVANT = re.compile(
+# 选题口径：**AI × 钱**。必须同时满足「AI 相关」和「金融/商业相关」，
+# 或者是马斯克/特朗普这类重要人物对 AI 的表态。纯论文、纯产品发布不要。
+_AI_RE = re.compile(
     r"\b("
     r"ai|a\.i\.|artificial intelligence|machine learning|llm|gpt|chatgpt|claude|gemini|"
-    r"openai|anthropic|deepmind|deepseek|mistral|llama|copilot|agent|agents|"
-    r"model|models|inference|training|gpu|nvidia|amd|tsmc|chip|chips|semiconductor|"
-    r"data center|datacenter|cloud|compute|robot|robotics|autonomous|self-driving|"
-    r"startup|funding|valuation|ipo|revenue|earnings|profit|margin|stocks?|shares?|"
-    r"market|markets|investors?|bond|yield|fed|inflation|rate cut|hiring|layoffs?|"
-    r"regulation|antitrust|acquisition|acquire|merger"
+    r"openai|anthropic|deepmind|deepseek|mistral|llama|copilot|agentic|agent|agents|"
+    r"model|models|inference|training|gpu|nvidia|amd|tsmc|chip|chips|semiconductors?|"
+    r"data cent(?:er|re)|datacenter|cloud|compute|robotics?|autonomous|self-driving|"
+    r"copilot|chatbot"
     r")\b",
     re.I,
 )
+
+_MONEY_RE = re.compile(
+    r"\b("
+    r"stock|stocks|shares?|share price|market cap|valuation|valued|ipo|listing|"
+    r"funding|raise[sd]?|investment|investors?|revenue|earnings|profit|margin|"
+    r"billion|million|trillion|price|pricing|cost|costs|spend|spending|capex|"
+    r"deal|contract|acquisition|acquire|merger|buyout|layoffs?|hiring|jobs|"
+    r"tariff|tariffs|subsid(?:y|ies)|antitrust|regulat(?:ion|e|or)|lawsuit|fine|"
+    r"bond|yields?|fed|inflation|rate cut|nasdaq|s&p|sell-?off|rally|bubble|"
+    r"budget|debt|fund|hedge|bank|banks|broker|analyst|forecast|guidance"
+    r")\b",
+    re.I,
+)
+
+# 重要人物表态也收：他们的观点能带出钱和政策
+_PERSON_RE = re.compile(
+    r"\b(musk|trump|altman|jensen huang|huang|zuckerberg|nadella|pichai|thiel|"
+    r"bessent|lutnick|vance|sacks|cook|ellison|oracle|softbank|son)\b",
+    re.I,
+)
+
+
+def _relevant(text: str) -> bool:
+    if not text:
+        return False
+    if not _AI_RE.search(text):
+        return False
+    return bool(_MONEY_RE.search(text) or _PERSON_RE.search(text))
+
 
 _HTML_TAG = re.compile(r"<[^>]+>")
 
@@ -97,7 +125,8 @@ class HotFetcher:
             return out
         for hit in hits:
             title = _clean(hit.get("title") or "")
-            if not title or not _RELEVANT.search(title):
+            story = _clean(hit.get("story_text") or "")
+            if not title or not _relevant(title + " " + story):
                 continue
             link = hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}"
             points = int(hit.get("points") or 0)
@@ -141,7 +170,9 @@ class HotFetcher:
                 continue
             # Google News 标题尾巴带 " - 来源"，去掉
             title = re.sub(r"\s+-\s+[^-]{2,40}$", "", title).strip()
-            if not _RELEVANT.search(title):
+            desc = _clean(item.findtext("description") or "")
+            desc = re.sub(r"^\s*" + re.escape(title) + r"\s*", "", desc).strip()
+            if not _relevant(title + " " + desc):
                 continue
             try:
                 dt = parsedate_to_datetime(item.findtext("pubDate") or "")
@@ -149,8 +180,6 @@ class HotFetcher:
                 dt = datetime.now(timezone.utc)
             if _age_hours(dt) > self.max_age_hours:
                 continue
-            desc = _clean(item.findtext("description") or "")
-            desc = re.sub(r"^\s*" + re.escape(title) + r"\s*", "", desc).strip()
             text = f"{title}\n\n{desc}\n\nSource: {link}"
             out.append((weight + max(0.0, 12.0 - _age_hours(dt)) / 2.0, TgPost(
                 channel="hot",
@@ -203,15 +232,18 @@ class HotFetcher:
     def fetch(self, limit: int = 30) -> list[TgPost]:
         hn = self._hacker_news()
         google = (
-            self._google_news("artificial intelligence OR AI OR OpenAI OR Nvidia when:1d", 30.0)
-            + self._google_news("stock market OR earnings OR Federal Reserve when:1d", 26.0)
+            # AI 的钱：股价、估值、融资、IPO、芯片生意
+            self._google_news("AI stocks OR Nvidia OR AMD OR OpenAI valuation OR AI funding when:2d", 30.0)
+            # 重要人物对 AI 的表态（马斯克/特朗普等）
+            + self._google_news("Musk AI OR Trump AI OR Altman AI when:2d", 28.0)
+            # AI 交易与监管：订单、垄断、关税、裁员
+            self._google_news("AI deal OR AI regulation OR AI layoffs OR AI capex when:2d", 26.0)
         )
         techcrunch = self._rss(
             "https://techcrunch.com/category/artificial-intelligence/feed/", 24.0, "techcrunch"
         )
-        arxiv = sorted(self._arxiv(), key=lambda x: x[0], reverse=True)[:8]
 
-        pool: list[tuple[float, TgPost]] = hn + google + techcrunch + arxiv
+        pool: list[tuple[float, TgPost]] = hn + google + techcrunch
 
         seen: set[int] = set()
         picked: list[TgPost] = []
