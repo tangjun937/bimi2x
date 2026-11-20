@@ -6,16 +6,25 @@ import os
 from ..config import Config
 from .base import Fetcher
 from .bot_fetcher import BotFetcher
+from .hot import HotFetcher
 from .telethon_fetcher import TelethonFetcher
 from .web import WebFetcher
 
-__all__ = ["Fetcher", "build_fetcher", "WebFetcher", "TelethonFetcher", "BotFetcher"]
+__all__ = ["Fetcher", "build_fetcher", "WebFetcher", "TelethonFetcher", "BotFetcher", "HotFetcher"]
 
 
 def build_fetcher(cfg: Config, offset: int = 0, channel: str | None = None) -> Fetcher:
     backend = (cfg.get("fetch.backend") or "web").lower()
     channel = channel or cfg.get("channel") or ""
     timeout = int(cfg.get("fetch.request_timeout", 20) or 20)
+
+    if backend == "hot":
+        return HotFetcher(
+            timeout=timeout,
+            user_agent=cfg.get("fetch.user_agent", "") or "",
+            max_age_hours=int(cfg.get("cleanup.max_age_hours", 36) or 36),
+            max_items=40,
+        )
 
     if backend == "web":
         return WebFetcher(channel, timeout=timeout,
