@@ -69,6 +69,30 @@ def _relevant(text: str) -> bool:
     return bool(_MONEY_RE.search(text) or _PERSON_RE.search(text))
 
 
+# 人物权重：总统 > 财团主理人 > 其他政客
+_PERSON_T1 = re.compile(r"\b(president|trump|white house|oval office)\b", re.I)
+_PERSON_T2 = re.compile(
+    r"\b(musk|altman|huang|jensen|zuckerberg|nadella|pichai|bezos|thiel|dimon|fink|"
+    r"masayoshi son|son|ellison|cook|amodei|hassabis|sacks|lutnick|bessent)\b",
+    re.I,
+)
+_PERSON_T3 = re.compile(
+    r"\b(senator|congressman|congresswoman|representative|governor|lawmakers?|"
+    r"parliament|minister|secretary of|commissioner|regulator|meps?|mp)\b",
+    re.I,
+)
+
+
+def _person_bonus(text: str) -> float:
+    if _PERSON_T1.search(text):
+        return 18.0
+    if _PERSON_T2.search(text):
+        return 12.0
+    if _PERSON_T3.search(text):
+        return 6.0
+    return 0.0
+
+
 _HTML_TAG = re.compile(r"<[^>]+>")
 
 
@@ -137,7 +161,7 @@ class HotFetcher:
             if _age_hours(dt) > self.max_age_hours:
                 continue
             text = f"{title}\n\n{points} points on Hacker News. Source: {link}"
-            out.append((40.0 + min(points, 500) / 10.0, TgPost(
+            out.append((40.0 + min(points, 500) / 10.0 + _person_bonus(title + " " + story), TgPost(
                 channel="hot",
                 message_id=_hid(link, title),
                 text=text,
@@ -181,7 +205,7 @@ class HotFetcher:
             if _age_hours(dt) > self.max_age_hours:
                 continue
             text = f"{title}\n\n{desc}\n\nSource: {link}"
-            out.append((weight + max(0.0, 12.0 - _age_hours(dt)) / 2.0, TgPost(
+            out.append((weight + max(0.0, 12.0 - _age_hours(dt)) / 2.0 + _person_bonus(title + " " + desc), TgPost(
                 channel="hot",
                 message_id=_hid(link, title),
                 text=text,
