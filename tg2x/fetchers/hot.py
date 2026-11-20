@@ -69,11 +69,22 @@ def _relevant(text: str) -> bool:
     return bool(_MONEY_RE.search(text) or _PERSON_RE.search(text))
 
 
-# 人物权重：总统 > 财团主理人 > 其他政客
+# 人物权重：总统 > 财团主理人 > 公司本身 > 其他政客
+# 「财团主理人」按影响力算，不按头衔：创始人即使离职（Sutskever / Murati / Karpathy）
+# 仍算该公司最重要的人；AI 团队创始人没有个人财富也算主理人。
 _PERSON_T1 = re.compile(r"\b(president|trump|white house|oval office)\b", re.I)
 _PERSON_T2 = re.compile(
-    r"\b(musk|altman|huang|jensen|zuckerberg|nadella|pichai|bezos|thiel|dimon|fink|"
-    r"masayoshi son|son|ellison|cook|amodei|hassabis|sacks|lutnick|bessent)\b",
+    r"\b(musk|altman|huang|jensen|lisa su|su|zuckerberg|nadella|pichai|bezos|thiel|"
+    r"dimon|fink|masayoshi son|ellison|cook|amodei|hassabis|sutskever|murati|karpathy|"
+    r"brockman|lecun|fei-fei li|andrew ng|mensch|srinivasan|alexandr wang|suleyman|"
+    r"delangue|mostaque|lutnick|bessent)\b",
+    re.I,
+)
+# 公司本身也算「财团」：新闻里没有点名主理人，但事是这家公司的，同样重要
+_COMPANY_T2 = re.compile(
+    r"\b(openai|anthropic|nvidia|amd|xai|deepmind|google|microsoft|meta|amazon|apple|"
+    r"tesla|tsmc|broadcom|micron|palantir|mistral|perplexity|databricks|oracle|"
+    r"softbank|coreweave)\b",
     re.I,
 )
 _PERSON_T3 = re.compile(
@@ -88,6 +99,8 @@ def _person_bonus(text: str) -> float:
         return 18.0
     if _PERSON_T2.search(text):
         return 12.0
+    if _COMPANY_T2.search(text):
+        return 8.0
     if _PERSON_T3.search(text):
         return 6.0
     return 0.0
