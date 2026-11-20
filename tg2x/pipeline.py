@@ -54,6 +54,9 @@ class Pipeline:
         self.max_per_cycle = int(cfg.get("fetch.max_per_cycle", 5) or 5)
         # 一次运行最多尝试多少条候选：碰到重复就换下一条，直到发够 max_per_cycle 篇
         self.max_tries = int(cfg.get("fetch.max_tries", self.max_per_cycle) or self.max_per_cycle)
+        # 是否用 DeepSeek 再做一次影响排序。热点模式关掉：抓取器已经按
+        # 「总统 > 财团主理人 > 其他政客 + 热度」排好，不想被模型改掉。
+        self.rank_enabled = bool(cfg.get("rank.enabled", True))
         self.archive_media = bool(cfg.get("storage.archive_media", True))
         self.dedup_enabled = bool(cfg.get("cleanup.dedup_enabled", True))
         self.dedup_window = int(cfg.get("cleanup.dedup_window", 10) or 10)
@@ -134,7 +137,7 @@ class Pipeline:
 
         # 2. 影响排序（DeepSeek），只发影响大的前 N 篇
         ranked = candidates
-        if len(candidates) > 1:
+        if len(candidates) > 1 and self.rank_enabled:
             ch_map = {id(p): ch for ch, p in candidates}
             posts = [p for _, p in candidates]
             ordered = self.writer.rank(posts, topic_first=self.topic_first)
