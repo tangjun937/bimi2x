@@ -115,6 +115,21 @@ class Store:
         ).fetchall()
         return [r["text_en"] for r in rows if r["text_en"]]
 
+    def purge_older_than(self, days: int) -> int:
+        """删除超过 N 天的记录（热点模式用：写过的内容只保留 5 天）。
+
+        注意：这会解除这段时间之前 message_id 的去重；热点模式下是有意为之
+        （同一个话题隔几天可以再写一次），普通 TG 搬运不要开这个。
+        """
+        if days <= 0:
+            return 0
+        cur = self.conn.execute(
+            "DELETE FROM messages WHERE julianday(created_at) < julianday('now') - ?",
+            (days,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def prune(self, keep: int = 10) -> int:
         """清理去重库，防止无限增长。
 
