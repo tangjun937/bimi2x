@@ -1,25 +1,21 @@
 # ===== Telegram 频道 -> 英文翻译 -> Buffer -> X 自动搬运 =====
 
-# 你关注的频道（不带 @）
-channel: "ONEMILLION_AI"
+# 当前数据源：hot = 直接抓公开热点（Hacker News 首页 / Google News RSS / arXiv），
+# 不再依赖 Telegram 频道。想切回 TG 把 fetch.backend 改回 web 即可。
+channel: "hot"
 
-# 多频道列表：所有频道的内容都发到同一个 X 账号
+# 热点模式只有一个「虚拟频道」
 channels:
-  - name: "ONEMILLION_AI"
-    lang: "zh"
-    rewrite: false
-  - name: "BEST_AI_TOOLS"
-    lang: "en"
-    rewrite: false
-  - name: "AIPOST"
+  - name: "hot"
     lang: "en"
     rewrite: false
 
 fetch:
-  # web      : 抓 https://t.me/s/<channel> 网页版，零凭证，30s 轮询（你不是频道主，只能用这个或 telethon）
-  # telethon : MTProto 用户会话，频道转私有 / 要秒级时用，需 api_id/api_hash + 手机号登录
-  # bot      : 仅频道的管理员可用（把 bot 设为频道管理员），你不在这种情况
-  backend: "web"
+  # hot      : 抓公开热点（HN / Google News RSS / arXiv），免费无凭证
+  # web      : 抓 https://t.me/s/<channel> 网页版
+  # telethon : MTProto 用户会话，需 api_id/api_hash + 手机号登录
+  # bot      : 仅频道管理员可用
+  backend: "hot"
   interval_seconds: 30
   # 每轮最多发多少篇（合并所有频道新帖后，按影响排序取前 N 篇）
   max_per_cycle: 4
@@ -101,7 +97,9 @@ cleanup:
   # 只搬带图/视频的内容，纯文字长文跳过。bimi2x 关闭（AI 新闻以文字为主）
   media_only: false
   # 新鲜度过滤：只发最近 N 小时内的帖子，超过的旧帖直接跳过（防止频道更新慢时补发旧闻）
-  max_age_hours: 24
+  max_age_hours: 36
+  # 记录保留天数：写过的内容只保留 N 天，过期自动删除（热点模式防重复写同一话题）
+  retention_days: 5
   # 去掉每帖第一行的【标题/抬头】，只发正文（仅 BIMI_CHS 格式需要）
   remove_heading: false
   # 去掉快讯开头用 <b>/<strong> 加粗的标题行（ONEMILLION_AI 每条快讯是「加粗标题 + 正文」）
