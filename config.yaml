@@ -89,6 +89,8 @@ writer:
 
 # 发文优先级排序
 rank:
+  # 热点模式关掉 DeepSeek 排序：抓取器已按「总统 > 财团主理人 > 其他政客 + 热度」排好
+  enabled: false
   # true = 主题优先(github项目 > 传统金融含股市 > 虚拟货币)；false = 媒体优先(视频>图文>无图冲突>普通)
   topic_first: true
 
