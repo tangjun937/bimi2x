@@ -129,10 +129,19 @@ def upload(data: bytes, ext: str = ".jpg", timeout: int = 40) -> str:
     return ""
 
 
-def attach(url: str, do_upload: bool = True) -> tuple[str, str]:
+def _upgrade_google(img: str) -> str:
+    """Google 的图片代理默认给 w300 缩略图，换成 w1200（实测 12KB -> 177KB）。"""
+    if "googleusercontent.com" not in img:
+        return img
+    return re.sub(r"=s0-w\d+-rw", "=s0-w1200-rw", img)
+
+
+def attach(url: str, do_upload: bool = True, credit_hint: str = "") -> tuple[str, str]:
     """完整链路：解析 → 找图 → 下载 → 上传。返回（公网 URL, 署名）。
 
     do_upload=False 时只验证链路，不上传（dry-run 用，免得白占图床）。
+    credit_hint：RSS 里带出来的媒体名（Google 的同意页/代理图只能给 "Google News"
+    这种错的署名，用它顶掉）。
     """
     if not url or not url.startswith("http"):
         return "", ""
@@ -142,6 +151,12 @@ def attach(url: str, do_upload: bool = True) -> tuple[str, str]:
     img, credit = find_image(page, final)
     if not img:
         return "", ""
+    if "googleusercontent.com" in img:
+        img = _upgrade_google(img)
+        if credit.lower() in ("google news", "news.google.com") or not credit:
+            credit = credit_hint
+    if not credit:
+        credit = credit_hint or urlparse(final).netloc.replace("www.", "")
     data, ext = download(img)
     if not data:
         return "", ""
