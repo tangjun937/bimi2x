@@ -37,6 +37,20 @@ def _paragraph_spacing(text: str) -> str:
     return text
 
 
+_NUM_RE = re.compile(r"\d")
+
+
+def _has_numbers(text: str) -> bool:
+    """正文里有没有可核对的事实（金额 / 百分比 / 日期 / 数量）。
+
+    先去掉来源链接和 Hacker News 的 "N points"，避免 URL、分数里的数字冒充事实。
+    """
+    body = (text or "").split("Source:")[0]
+    body = re.sub(r"https?://\S+", " ", body)
+    body = re.sub(r"\b\d+\s+points on Hacker News\b", " ", body, flags=re.I)
+    return bool(_NUM_RE.search(body))
+
+
 class Pipeline:
     def __init__(self, cfg: Config, dry_run: bool | None = None):
         self.cfg = cfg
@@ -68,6 +82,9 @@ class Pipeline:
         self.content_filter = bool(cfg.get("cleanup.content_filter", False))
         # 只搬带图/视频的内容，纯文字长文跳过。默认关闭，宠物视频类账号开启
         self.media_only = bool(cfg.get("cleanup.media_only", False))
+        # 素材门槛：原文连一个数字都没有（金额/百分比/日期/数量）就跳过。
+        # 没有数字的新闻写出来必然是空话——这是「注水」的根，默认开启。
+        self.require_numbers = bool(cfg.get("cleanup.require_numbers", True))
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -141,6 +158,13 @@ class Pipeline:
                     log.info("跳过 [%s]：超过 %d 小时的旧帖", p.key, self.max_age_hours)
                     self.store.record(p, "skipped")
                     self.store.archive(p, {"reason": "stale"})
+                    result["skipped"] += 1
+                    continue
+                # 素材门槛：没有可核数字的新闻，写出来只能是空话，换下一条
+                if self.require_numbers and not _has_numbers(p.text):
+                    log.info("跳过 [%s]：原文没有任何数字（无金额/百分比/日期），素材太薄", p.key)
+                    self.store.record(p, "skipped")
+                    self.store.archive(p, {"reason": "no-hard-facts"})
                     result["skipped"] += 1
                     continue
                 candidates.append((ch, p))
