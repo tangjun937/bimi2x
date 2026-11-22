@@ -34,6 +34,13 @@ publish:
   max_len: 25000
   # 发文是否带上 Telegram 原文链接（false = 只发正文，不带链接）
   include_source_link: false
+  # 配图：从文章页取 og:image → 提交到仓库 media/ → raw 链接交给 Buffer
+  attach_image: true
+  # 有配图的优先：按影响力顺序往下探前 N 条候选，谁有图就把谁提到第一位再发。
+  # 一条都没图（或超时）就按原顺序发——配图是加分项，不牺牲选题质量。
+  prefer_image: true
+  image_probe: 4
+  image_probe_seconds: 20
 
   buffer:
     token_env: "BUFFER_TOKEN"
