@@ -40,6 +40,8 @@ def _paragraph_spacing(text: str) -> str:
 
 
 _NUM_RE = re.compile(r"\d")
+# 从原文的 "Source: Livemint | https://…" 里取媒体名，做配图署名
+_SOURCE_HINT = re.compile(r"Source:\s*([^|\n]{2,60})\s*\|")
 
 
 def _has_numbers(text: str) -> bool:
@@ -409,8 +411,12 @@ class Pipeline:
         if not self.attach_image or not (post.url or "").startswith("http"):
             return ""
         dry = bool(self.publisher.dry_run)
+        hint = ""
+        m = _SOURCE_HINT.search(post.text or "")
+        if m:
+            hint = m.group(1).strip()
         try:
-            img_url, credit = media_mod.attach(post.url, do_upload=not dry)
+            img_url, credit = media_mod.attach(post.url, do_upload=not dry, credit_hint=hint)
         except Exception as e:  # noqa: BLE001
             log.warning("配图失败（照常发文字）：%s", str(e)[:150])
             return ""
