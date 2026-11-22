@@ -96,6 +96,11 @@ class Pipeline:
         # 配图：从文章页取 og:image，下载后传公网图床再交给 Buffer。
         # 真正要挂上去还得 publish.buffer.media = "telegram_url"，否则只取不发。
         self.attach_image = bool(cfg.get("publish.attach_image", True))
+        # 配图优先：按影响力顺序往下探前 N 条候选，谁有 og:image 就把谁提到第一位。
+        # 探不到就维持原顺序——配图是加分项，不为了配图牺牲选题质量。
+        self.prefer_image = bool(cfg.get("publish.prefer_image", True))
+        self.image_probe = int(cfg.get("publish.image_probe", 4) or 4)
+        self.image_budget = float(cfg.get("publish.image_probe_seconds", 20) or 20)
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -186,6 +191,9 @@ class Pipeline:
             ordered = self.writer.rank(posts, topic_first=self.topic_first)
             if len(ordered) == len(posts):
                 ranked = [(ch_map[id(p)], p) for p in ordered]
+
+        # 2.5 配图优先：按影响力顺序往下探，第一条有图的提到最前面（最多探 N 条 / 限时）
+        ranked = self._order_by_image(ranked)
 
         # 候选池：一次只发 max_per_cycle 篇，但最多尝试 max_tries 条——
         # 遇到重复（关键词去重命中）就跳过，换下一条，保证每条都是当场抓到的。
@@ -402,6 +410,34 @@ class Pipeline:
         return ""
 
     # ---------- 配图 ----------
+    def _order_by_image(self, ranked: list[tuple[dict, TgPost]]) -> list[tuple[dict, TgPost]]:
+        """配图优先：按已有影响力顺序往下看，谁有可用配图就把谁提到第一位。
+
+        只探前 `image_probe` 条、最多花 `image_probe_seconds` 秒；
+        一条都没图 / 超时 / 关掉开关时原样返回（不改变选题顺序）。
+        """
+        if not (self.prefer_image and self.attach_image) or len(ranked) < 2:
+            return ranked
+        if getattr(self.publisher, "dry_run", False):
+            return ranked                      # dry-run 只验文风，不多花时间抓图
+        t0 = time.monotonic()
+        for i, (_ch, p) in enumerate(ranked[:self.image_probe]):
+            if not (p.url or "").startswith("http"):
+                continue
+            try:
+                img, _credit = media_mod.probe(p.url)
+            except Exception as e:  # noqa: BLE001
+                log.debug("探图失败 %s: %s", p.key, str(e)[:100])
+                img = ""
+            if img:
+                if i:
+                    log.info("配图优先：第 %d 条候选有图，提到第一位 [%s]", i + 1, p.key)
+                return [ranked[i]] + ranked[:i] + ranked[i + 1:]
+            if time.monotonic() - t0 > self.image_budget:
+                log.info("配图优先：探图超时（%.0fs），按原顺序发", self.image_budget)
+                break
+        return ranked
+
     def _attach_image(self, post: TgPost) -> str:
         """给这条配一张图：文章 og:image → 下载 → 传图床。返回署名，失败返回空串。
 
