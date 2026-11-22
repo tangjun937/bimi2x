@@ -299,6 +299,7 @@ class Pipeline:
             if self.publisher.dry_run:
                 # dry run 不写去重库，否则这条会被当成已发，真跑时反而漏掉
                 self.store.mark(post.channel, post.message_id, "translated")
+                log.info("DRY-RUN 全文 [%s]：\n%s", post.key, item.final_text)
                 log.info("DRY-RUN 生成完毕 [%s]（未入库，下一轮仍会真发）", post.key)
                 self._items.append({"key": post.key, "text": item.final_text, "error": None})
                 return "published"
