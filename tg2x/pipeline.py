@@ -321,9 +321,8 @@ class Pipeline:
             return "skipped"
 
         item = TransPost(post=post, text_en=text_en)
-        credit = self._attach_image(post)
-        if credit:
-            item.text_en = f"{item.text_en}\n\nImage: {credit}"
+        # 配图（只在日志里记署名，正文里不写）
+        self._attach_image(post)
         item.final_text = self.publisher.build_text(item)
         self.store.mark(post.channel, post.message_id, "translated", text_en=text_en)
         self.store.archive(post, {"text_en": text_en, "final_text": item.final_text,
