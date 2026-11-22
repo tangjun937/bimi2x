@@ -1,6 +1,7 @@
 """主流程：抓取 -> 去重 -> 归档 -> 翻译 -> 发布。"""
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import mimetypes
@@ -12,6 +13,7 @@ from pathlib import Path
 import requests
 
 from . import market_clock
+from . import media as media_mod
 from .adfilter import ad_reason
 from .config import Config
 from .dedup import is_duplicate
@@ -60,6 +62,11 @@ class Pipeline:
         self.store = Store(cfg.path_of("storage.data_dir", "data"))
         self.translator = Translator(cfg)
         self.writer = NewsWriter(cfg)
+        # writer 支持 avoid 参数时，把最近 5 条已发的首尾句喂进去，防同一句式反复用
+        try:
+            self._writer_takes_avoid = "avoid" in inspect.signature(self.writer.write).parameters
+        except (TypeError, ValueError):
+            self._writer_takes_avoid = False
         self.publisher = Publisher(cfg)
         if dry_run is not None:
             self.publisher.dry_run = dry_run
@@ -82,9 +89,11 @@ class Pipeline:
         self.content_filter = bool(cfg.get("cleanup.content_filter", False))
         # 只搬带图/视频的内容，纯文字长文跳过。默认关闭，宠物视频类账号开启
         self.media_only = bool(cfg.get("cleanup.media_only", False))
-        # 素材门槛：原文连一个数字都没有（金额/百分比/日期/数量）就跳过。
-        # 没有数字的新闻写出来必然是空话——这是「注水」的根，默认开启。
-        self.require_numbers = bool(cfg.get("cleanup.require_numbers", True))
+        # 素材门槛：有数字的排前面（不强制跳过）。薄素材也能发，只是优先级低。
+        self.prefer_numbers = bool(cfg.get("cleanup.prefer_numbers", True))
+        # 配图：从文章页取 og:image，下载后传公网图床再交给 Buffer。
+        # 真正要挂上去还得 publish.buffer.media = "telegram_url"，否则只取不发。
+        self.attach_image = bool(cfg.get("publish.attach_image", True))
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -160,14 +169,12 @@ class Pipeline:
                     self.store.archive(p, {"reason": "stale"})
                     result["skipped"] += 1
                     continue
-                # 素材门槛：没有可核数字的新闻，写出来只能是空话，换下一条
-                if self.require_numbers and not _has_numbers(p.text):
-                    log.info("跳过 [%s]：原文没有任何数字（无金额/百分比/日期），素材太薄", p.key)
-                    self.store.record(p, "skipped")
-                    self.store.archive(p, {"reason": "no-hard-facts"})
-                    result["skipped"] += 1
-                    continue
+                # 数字优先（不强制）：有金额/日期/涨跌动作的排前面，薄素材留作兜底
                 candidates.append((ch, p))
+
+        # 1.5 数字优先：有可核数字或涨跌动作的排前面（稳定排序，不打乱抓取器原有分数序）
+        if self.prefer_numbers and len(candidates) > 1:
+            candidates.sort(key=lambda cp: 0 if _has_numbers(cp[1].text) else 1)
 
         # 2. 影响排序（DeepSeek），只发影响大的前 N 篇
         ranked = candidates
@@ -287,7 +294,11 @@ class Pipeline:
             # 先清理原文（去标题、去尾巴、去信源），再交给 DeepSeek 写作
             clean = (self.translator._clean_en(post.text) if ch["lang"] == "en"
                      else self.translator._clean(post.text))
-            text_en = self.writer.write(clean)
+            # 反重复：把最近 5 条已发正文交给 writer，要求别复用它们的开头/结尾句式
+            kwargs = {}
+            if self._writer_takes_avoid:
+                kwargs["avoid"] = self.store.recent_published(5)
+            text_en = self.writer.write(clean, **kwargs)
             if not text_en:
                 # 翻译直发：段落间空一行
                 text_en = (self.translator._clean_en(post.text) if ch["lang"] == "en"
@@ -308,6 +319,9 @@ class Pipeline:
             return "skipped"
 
         item = TransPost(post=post, text_en=text_en)
+        credit = self._attach_image(post)
+        if credit:
+            item.text_en = f"{item.text_en}\n\nImage: {credit}"
         item.final_text = self.publisher.build_text(item)
         self.store.mark(post.channel, post.message_id, "translated", text_en=text_en)
         self.store.archive(post, {"text_en": text_en, "final_text": item.final_text,
@@ -386,6 +400,30 @@ class Pipeline:
                 return str(w)
         return ""
 
+    # ---------- 配图 ----------
+    def _attach_image(self, post: TgPost) -> str:
+        """给这条配一张图：文章 og:image → 下载 → 传图床。返回署名，失败返回空串。
+
+        配图是加分项：任何一步失败都照常发纯文字，不影响发布。
+        """
+        if not self.attach_image or not (post.url or "").startswith("http"):
+            return ""
+        dry = bool(self.publisher.dry_run)
+        try:
+            img_url, credit = media_mod.attach(post.url, do_upload=not dry)
+        except Exception as e:  # noqa: BLE001
+            log.warning("配图失败（照常发文字）：%s", str(e)[:150])
+            return ""
+        if not img_url:
+            log.info("这条取不到配图（源站没给 og:image 或被拦），照常发文字")
+            return ""
+        if dry:
+            log.info("DRY-RUN 配图候选：%s  署名=%s", img_url, credit or "?")
+            return ""
+        post.media_urls = [img_url]
+        log.info("配图：%s  署名=%s", img_url, credit or "?")
+        return credit
+
     # ---------- 图片落地 ----------
     def _fetch_media(self, post: TgPost) -> None:
         if not self.archive_media or not post.media_urls:
@@ -410,7 +448,7 @@ class Pipeline:
         post.media_files = files
 
     # ---------- 只写不发（调文风用）----------
-    def demo(self, limit: int = 3, require_numbers: bool = True) -> list[dict]:
+    def demo(self, limit: int = 3, prefer_numbers: bool = True) -> list[dict]:
         """给排序最前的前 N 条候选各生成一版正文，用来判断文风是否稳定。
 
         **不发布、不写去重库、不消耗候选**——所以可以反复跑，不会把号发秃。
@@ -420,13 +458,10 @@ class Pipeline:
             for p in self._gather_channel(ch, {"fetched": 0, "new": 0}):
                 if self.content_filter and content_filter_reason(p.text):
                     continue
-                if require_numbers and not _has_numbers(p.text):
-                    continue
                 collected.append((ch, p))
-                if len(collected) >= limit:
-                    break
-            if len(collected) >= limit:
-                break
+        if prefer_numbers:
+            collected.sort(key=lambda cp: 0 if _has_numbers(cp[1].text) else 1)
+        collected = collected[:limit]
 
         out: list[dict] = []
         for ch, p in collected[:limit]:
