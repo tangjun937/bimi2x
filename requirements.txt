@@ -3,6 +3,8 @@ requests>=2.31
 beautifulsoup4>=4.12
 lxml>=4.9
 PyYAML>=6.0
+# zoneinfo 在没装系统时区库的镜像（Windows / slim）上要靠它，Actions 上也留个保险
+tzdata>=2024.1
 
 # 可选：telethon 用户会话模式（连私有频道 / 更高实时性时安装）
 # pip install telethon
