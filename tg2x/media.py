@@ -44,6 +44,10 @@ def _session() -> requests.Session:
     s = requests.Session()
     s.trust_env = False
     s.headers.update({"User-Agent": UA})
+    # 本机跑要过代理；云主机上没有这个环境变量，保持直连
+    proxy = os.environ.get("TG2X_PROXY", "").strip()
+    if proxy:
+        s.proxies.update({"http": proxy, "https": proxy})
     return s
 
 
