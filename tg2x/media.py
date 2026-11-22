@@ -71,6 +71,38 @@ def _first(pattern_list, text: str) -> str:
     return ""
 
 
+_PAGES: dict[str, tuple[str, str]] = {}
+_PAGES_MAX = 16
+
+
+def _page(url: str) -> tuple[str, str]:
+    """带缓存的 resolve：同一轮里先 probe 再 attach，只抓一次文章页。"""
+    hit = _PAGES.get(url)
+    if hit is not None:
+        return hit
+    final, html = resolve(url)
+    if len(_PAGES) >= _PAGES_MAX:
+        _PAGES.clear()
+    _PAGES[url] = (final, html)
+    return final, html
+
+
+def probe(url: str) -> tuple[str, str]:
+    """只看这篇文章有没有可用配图（不下载、不上传）。返回（图地址, 署名）。
+
+    给"有配图的优先选"用：命中就返回非空，没命中返回 ("", "")。
+    """
+    if not url or not url.startswith("http"):
+        return "", ""
+    final, page = _page(url)
+    if not page:
+        return "", ""
+    img, credit = find_image(page, final)
+    if not img:
+        return "", ""
+    return _upgrade_google(img), credit
+
+
 def resolve(url: str, timeout: int = 20) -> tuple[str, str]:
     """跟随跳转拿到最终页面。返回（最终 URL, HTML）。失败返回 ("", "")。
 
@@ -237,7 +269,7 @@ def attach(url: str, do_upload: bool = True, credit_hint: str = "") -> tuple[str
     """
     if not url or not url.startswith("http"):
         return "", ""
-    final, page = resolve(url)
+    final, page = _page(url)      # 上一轮 probe 抓过的页面直接复用
     if not page:
         return "", ""
     img, credit = find_image(page, final)
