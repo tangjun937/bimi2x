@@ -68,20 +68,28 @@ def _first(pattern_list, text: str) -> str:
 
 
 def resolve(url: str, timeout: int = 20) -> tuple[str, str]:
-    """跟随跳转拿到最终页面。返回（最终 URL, HTML）。失败返回 ("", "")。"""
+    """跟随跳转拿到最终页面。返回（最终 URL, HTML）。失败返回 ("", "")。
+
+    Google 那边会间歇性 429/超时，重试两次再放弃。
+    """
     s = _session()
-    try:
-        r = s.get(url, timeout=timeout, allow_redirects=True)
-        if r.status_code != 200:
-            return "", ""
-        final = r.url
-        # Google 的同意页 / 反爬页：不是文章正文
-        if "consent.google.com" in final or "sorry/index" in final:
-            return "", ""
-        return final, r.text
-    except Exception as e:  # noqa: BLE001
-        log.debug("解析文章页失败 %s: %s", url[:80], str(e)[:100])
-        return "", ""
+    for attempt in range(3):
+        try:
+            r = s.get(url, timeout=timeout, allow_redirects=True)
+            if r.status_code == 429:
+                time.sleep(3 * (attempt + 1))
+                continue
+            if r.status_code != 200:
+                return "", ""
+            final = r.url
+            # Google 的同意页 / 反爬页：不是文章正文
+            if "consent.google.com" in final or "sorry/index" in final:
+                return "", ""
+            return final, r.text
+        except Exception as e:  # noqa: BLE001
+            log.debug("解析文章页失败(%d/3) %s: %s", attempt + 1, url[:80], str(e)[:100])
+            time.sleep(2 * (attempt + 1))
+    return "", ""
 
 
 def find_image(html: str, base_url: str) -> tuple[str, str]:
