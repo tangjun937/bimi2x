@@ -11,6 +11,7 @@ from pathlib import Path
 
 import requests
 
+from . import market_clock
 from .adfilter import ad_reason
 from .config import Config
 from .dedup import is_duplicate
@@ -106,6 +107,15 @@ class Pipeline:
     def cycle(self, publish: bool = True) -> dict:
         result = {"fetched": 0, "new": 0, "published": 0, "failed": 0, "skipped": 0}
         self._items = []
+
+        # 发布窗口：北京时间 18:00 -> 次日 08:20（cron 用 UTC 写死，夏令时不影响）。
+        # 窗口外只扫不发——cron 补跑、手动触发、时区漂移都不会把帖子放到白天。
+        if publish and not getattr(self.publisher, "dry_run", False):
+            allowed, why = market_clock.publish_allowed(self.cfg)
+            if not allowed:
+                log.info("不在发布窗口（%s），本轮不发布", why)
+                return result
+        log.info("市场时钟：%s", market_clock.describe())
 
         # 1. 收集所有频道的新帖（开启合规过滤时，先过滤避免占用发文名额）
         candidates: list[tuple[dict, TgPost]] = []
