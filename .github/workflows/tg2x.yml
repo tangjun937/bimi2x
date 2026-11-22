@@ -16,6 +16,7 @@ on:
           - run       # 正常跑（有新帖才发，最新1条）
           - dry_run   # 只打印不发
           - demo      # 只写不发：前 3 条候选各写一版，看文风（不入库）
+          - export_state  # 只把去重库打包成 artifact（迁移到本机用）
           - preview   # 发最新一条给我预览
 
 permissions:
@@ -51,6 +52,14 @@ jobs:
           restore-keys: |
             bimi2x-state-
 
+      - name: 导出状态库（仅 export_state 模式）
+        if: ${{ inputs.mode == 'export_state' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tg2x-state
+          path: data/tg2x.sqlite3
+          if-no-files-found: warn
+
       - name: 跑一轮
         env:
           BUFFER_TOKEN: ${{ secrets.BUFFER_TOKEN }}
@@ -68,6 +77,10 @@ jobs:
             demo)
               echo "== demo：前 3 条各写一版，不发不入库 =="
               python run.py demo --limit 3
+              ;;
+            export_state)
+              echo "== 只导出状态库 =="
+              ls -la data/ || true
               ;;
             preview)
               echo "== 预览：释放最新一条并发送 =="
