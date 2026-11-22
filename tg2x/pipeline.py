@@ -428,6 +428,10 @@ class Pipeline:
             return ""
         post.media_urls = [img_url]
         log.info("配图：%s  署名=%s", img_url, credit or "?")
+        try:
+            media_mod.cleanup()          # 顺手清掉 3 天前的图，仓库不长胖
+        except Exception as e:  # noqa: BLE001
+            log.debug("清理旧图失败：%s", str(e)[:100])
         return credit
 
     # ---------- 图片落地 ----------
