@@ -203,6 +203,30 @@ def content_filter_reason(text: str) -> str:
     return ""
 
 
+_SENT_SPLIT = re.compile(r"(?<=[.?!])\s+")
+
+
+def _edge_sentences(text: str) -> tuple:
+    """取首句与末句（各截断 120 字符）；切不出来时用整段的头尾 120 字符兜底。"""
+    t = (text or "").strip()
+    if not t:
+        return "", ""
+    parts = [x.strip() for x in _SENT_SPLIT.split(t) if x.strip()]
+    if len(parts) <= 1:
+        return t[:120], t[-120:]
+    return parts[0][:120], parts[-1][:120]
+
+
+def _avoid_block(avoid) -> str:
+    """构造「最近已用开头/结尾」提示块，最多 5 条。"""
+    lines = ["RECENT POSTS — these openings and closings are already used. Do not reuse their shape:"]
+    for post in avoid[:5]:
+        first, last = _edge_sentences(post)
+        lines.append(f"- OPEN: {first}  |  CLOSE: {last}")
+    lines.append("If your draft opens or closes with the same structure as any line above, rewrite it.")
+    return "\n".join(lines)
+
+
 class NewsWriter:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -236,17 +260,21 @@ class NewsWriter:
             raise RuntimeError(f"DeepSeek HTTP {r.status_code}: {r.text[:200]}")
         return (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
-    def write(self, text: str) -> str:
+    def write(self, text: str, avoid: list[str] | None = None) -> str:
         """洗稿 + 互动形式 + 写作总册原则，输出英文推文。失败返回空串（调用方 fallback）。"""
         if not self.available() or not (text or "").strip():
             return ""
+        user = (text or "").strip()
+        avoid = [a for a in (avoid or []) if (a or "").strip()][:5]
+        if avoid:
+            user = _avoid_block(avoid) + "\n\n" + user
         try:
-            out = self._chat(WRITE_SYSTEM, (text or "").strip()).strip()
+            out = self._chat(WRITE_SYSTEM, user).strip()
             if _cjk_ratio(out) > 0.05:
                 log.warning("DeepSeek 又用中文回答（中文占比 %.0f%%），重试一次", _cjk_ratio(out) * 100)
                 out = self._chat(
                     WRITE_SYSTEM + "\n\nREMINDER: write the post in English. Chinese output is a failure.",
-                    (text or "").strip(),
+                    user,
                 ).strip()
             if _cjk_ratio(out) > 0.05:
                 log.warning("重试后仍是中文（%.0f%%），交给翻译兜底", _cjk_ratio(out) * 100)
