@@ -107,10 +107,13 @@ class Store:
         return {r["status"]: r["c"] for r in rows}
 
     def recent_published(self, limit: int = 10) -> list[str]:
-        """最近 limit 条已发布内容的英文文本（用于关键词去重）。"""
+        """最近 limit 条已发布内容的英文文本（用于关键词去重和"别撞句式"）。
+
+        按 published_at 排：热点模式的 message_id 是哈希，按它排等于随机取。
+        """
         rows = self.conn.execute(
             "SELECT text_en FROM messages WHERE status='published' AND text_en IS NOT NULL "
-            "ORDER BY message_id DESC LIMIT ?",
+            "ORDER BY COALESCE(published_at, created_at) DESC, rowid DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [r["text_en"] for r in rows if r["text_en"]]
