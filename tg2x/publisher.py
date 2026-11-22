@@ -145,13 +145,26 @@ class Publisher:
                 due_at = due.strftime("%Y-%m-%dT%H:%M:%SZ")
                 mode = "customScheduled"
                 log.info("同批第 %d 条排到 %d 分钟后发布（%s）", position + 1, delay, due_at)
-            post = client.create_post(
-                channel_id=channel_id,
-                text=item.final_text,
-                assets=assets,
-                mode=mode,
-                due_at=due_at,
-            )
+            try:
+                post = client.create_post(
+                    channel_id=channel_id,
+                    text=item.final_text,
+                    assets=assets,
+                    mode=mode,
+                    due_at=due_at,
+                )
+            except BufferError as e:
+                # 配图是加分项：图被拒（下载失败 / 格式不对）不能连正文一起丢掉
+                if not assets:
+                    raise
+                log.warning("带配图发失败（%s），改发纯文字重试一次", str(e)[:150])
+                post = client.create_post(
+                    channel_id=channel_id,
+                    text=item.final_text,
+                    assets=[],
+                    mode=mode,
+                    due_at=due_at,
+                )
             return PublishResult(True, str(post.get("id", "")),
                                  f"buffer post {post.get('id')} dueAt={post.get('dueAt')}")
         except BufferError as e:
