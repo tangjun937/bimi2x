@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time
 import urllib.parse
@@ -163,6 +164,10 @@ class HotFetcher:
         # Google News 对同一 IP 的连续请求会 429，7 组查询必须错开
         self.gnews_delay = 1.8
         self._gnews_calls = 0
+        # 本机跑要过代理（云主机上直连，不设就不走代理）
+        proxy = os.environ.get("TG2X_PROXY", "").strip()
+        if proxy:
+            self.session.proxies.update({"http": proxy, "https": proxy})
 
     # ---------- 各数据源 ----------
     def _hacker_news(self) -> list[tuple[float, TgPost]]:
