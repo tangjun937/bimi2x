@@ -19,7 +19,7 @@ on:
           - preview   # 发最新一条给我预览
 
 permissions:
-  contents: read
+  contents: write     # 配图要提交到 media/ 目录（raw 链接给 Buffer 用）
 
 # 防止两次运行叠在一起（叠起来会重复发文）
 concurrency:
@@ -55,6 +55,7 @@ jobs:
         env:
           BUFFER_TOKEN: ${{ secrets.BUFFER_TOKEN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
           TZ: Asia/Shanghai
           PYTHONIOENCODING: utf-8
         run: |
