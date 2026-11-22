@@ -1,16 +1,23 @@
-"""配图：从文章页取 og:image → 下载 → 传到公网图床 → 交给 Buffer。
+"""配图：从文章页取 og:image → 下载 → 传到**仓库自己的 media/ 目录** → 交给 Buffer。
 
-为什么不能直接用文章原图的链接：多数媒体有防盗链、要 referer、或者干脆是
-CDN 私有路径，Buffer 抓不到（历史坑：Buffer 只接受公网可直接访问的 URL）。
-所以这里先下载到内存，再传到 litterbox（catbox 的临时图床，72 小时过期），
-拿一个干净的 https 直链。
+为什么不用第三方图床：litterbox / catbox 对云主机 IP 一律返回 412 Invalid uploader，
+0x0.st 已停用上传，tmpfiles 的 /dl/ 链接是 HTML 中转页、Buffer 拿不到图。
+仓库自己的 raw 链接实测提交后 4 秒可取，是唯一稳定的一条路。
+
+为什么不能直接用文章原图链接：多数媒体有防盗链、要 referer，Buffer 抓不到。
+
+清理：每轮顺手删掉 3 天前的图，media/ 目录保持在几十张的量级。
 
 全部失败就返回 (None, "")，调用方照常发纯文字——配图是加分项，不是必需项。
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import logging
+import os
 import re
 import time
 from urllib.parse import urljoin, urlparse
@@ -26,7 +33,11 @@ MAX_BYTES = 8 * 1024 * 1024      # 8MB 以上不传（Buffer 也吃不消）
 MIN_BYTES = 12 * 1024            # 太小多半是图标 / 占位图
 OK_TYPES = ("image/jpeg", "image/png", "image/webp")
 
-HOST = "https://litterbox.catbox.moe/resources/internals/api.php"
+REPO = "tangjun937/bimi2x"
+BRANCH = "main"
+MEDIA_DIR = "media"
+KEEP_DAYS = 3
+MAX_DELETES = 15
 
 
 def _session() -> requests.Session:
@@ -109,24 +120,93 @@ def download(url: str, timeout: int = 25) -> tuple[bytes, str]:
         return b"", ""
 
 
-def upload(data: bytes, ext: str = ".jpg", timeout: int = 40) -> str:
-    """传到 litterbox（72 小时有效），返回公网直链。失败返回空串。"""
+def _gh_token() -> str:
+    return (os.environ.get("MEDIA_UPLOAD_TOKEN") or os.environ.get("GITHUB_TOKEN")
+            or os.environ.get("GITHUB_PAT") or "").strip()
+
+
+def _gh_headers() -> dict:
+    token = _gh_token()
+    h = {"Accept": "application/vnd.github+json", "User-Agent": "bimi2x"}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
+
+
+def _api(path: str) -> str:
+    return f"https://api.github.com/repos/{REPO}/contents/{path}"
+
+
+def upload(data: bytes, ext: str = ".jpg", timeout: int = 60) -> str:
+    """把图提交到仓库 media/ 目录，返回 raw 公网直链。失败返回空串。"""
+    if not _gh_token():
+        log.warning("没有 GITHUB_TOKEN，跳过配图上传")
+        return ""
+    name = time.strftime("%Y%m%d-%H%M%S") + "-" + hashlib.sha1(data).hexdigest()[:6] + ext
+    path = f"{MEDIA_DIR}/{name}"
+    body = {"message": f"media: {name}",
+            "content": base64.b64encode(data).decode(),
+            "branch": BRANCH}
     s = _session()
-    name = f"bimi2x{ext}"
     try:
-        r = s.post(
-            HOST,
-            data={"reqtype": "fileupload", "time": "72h"},
-            files={"fileToUpload": (name, data)},
-            timeout=timeout,
-        )
-        txt = (r.text or "").strip()
-        if txt.startswith("http"):
-            return txt
-        log.warning("图床上传失败：%s", txt[:120])
+        r = s.put(_api(path), headers={**_gh_headers(), "Content-Type": "application/json"},
+                  data=json.dumps(body).encode(), timeout=timeout)
+        if r.status_code not in (200, 201):
+            log.warning("图上传失败：HTTP %s %s", r.status_code, (r.text or "")[:120])
+            return ""
     except Exception as e:  # noqa: BLE001
-        log.warning("图床上传异常：%s", str(e)[:120])
+        log.warning("图上传异常：%s", str(e)[:120])
+        return ""
+
+    url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{path}"
+    for _ in range(8):                      # 确认 Buffer 马上能取到
+        try:
+            g = s.get(url, timeout=20)
+            if g.status_code == 200 and len(g.content) > 1000:
+                return url
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(2)
+    log.warning("图已提交但 raw 取不到：%s", url)
     return ""
+
+
+def cleanup(days: int = KEEP_DAYS) -> int:
+    """删掉 media/ 下超过 N 天的图，避免仓库无限长胖。返回删除数量。"""
+    if not _gh_token():
+        return 0
+    s = _session()
+    try:
+        r = s.get(_api(MEDIA_DIR), headers=_gh_headers(), timeout=30)
+        if r.status_code != 200:
+            return 0
+        items = r.json()
+    except Exception:  # noqa: BLE001
+        return 0
+    if not isinstance(items, list):
+        return 0
+    cutoff = time.strftime("%Y%m%d", time.gmtime(time.time() - days * 86400))
+    removed = 0
+    for it in sorted(items, key=lambda x: x.get("name", "")):
+        if removed >= MAX_DELETES:
+            break
+        name = it.get("name", "")
+        m = re.match(r"^(\d{8})-", name)
+        if not m or m.group(1) >= cutoff:
+            continue
+        try:
+            d = s.delete(_api(f"{MEDIA_DIR}/{name}"),
+                         headers={**_gh_headers(), "Content-Type": "application/json"},
+                         data=json.dumps({"message": f"media: prune {name}",
+                                          "sha": it["sha"], "branch": BRANCH}).encode(),
+                         timeout=30)
+            if d.status_code in (200, 201):
+                removed += 1
+        except Exception:  # noqa: BLE001
+            continue
+    if removed:
+        log.info("清理旧配图：删除 %d 张（保留 %d 天）", removed, days)
+    return removed
 
 
 def _upgrade_google(img: str) -> str:
