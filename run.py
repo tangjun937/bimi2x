@@ -282,6 +282,29 @@ def cmd_loop(cfg: cfgmod.Config, dry_run: bool, interval: int | None) -> int:
     return 0
 
 
+def cmd_demo(cfg: cfgmod.Config, limit: int) -> int:
+    """只写不发：给排序最前的前 N 条候选各生成一版，用来判断文风稳不稳。
+
+    不发布、不写去重库、不消耗候选，可以反复跑。
+    """
+    p = Pipeline(cfg)
+    try:
+        rows = p.demo(limit=limit)
+        if not rows:
+            print("没有符合口径的候选（可能全被素材门槛挡掉了）")
+            return 0
+        for i, r in enumerate(rows, 1):
+            print("=" * 72)
+            print(f"[{i}] {r['key']}  {r['url']}")
+            print(f"    源标题: {r['headline']}")
+            print("-" * 72)
+            print(r["text"])
+            print()
+        return 0
+    finally:
+        p.close()
+
+
 def cmd_backfill(cfg: cfgmod.Config, limit: int, publish: bool) -> int:
     p = Pipeline(cfg)
     try:
@@ -379,6 +402,9 @@ def main() -> int:
 
     sub.add_parser("preview", help="释放当前频道最新一条并发送")
 
+    sp = sub.add_parser("demo", help="只写不发：给前 N 条候选各写一版，看文风")
+    sp.add_argument("--limit", type=int, default=3)
+
     sp = sub.add_parser("loop", help="常驻轮询")
     sp.add_argument("--dry-run", action="store_true", default=None)
     sp.add_argument("--interval", type=int, default=None)
@@ -411,6 +437,8 @@ def main() -> int:
         return cmd_once(cfg, args.dry_run)
     if args.cmd == "preview":
         return cmd_preview(cfg)
+    if args.cmd == "demo":
+        return cmd_demo(cfg, args.limit)
     if args.cmd == "loop":
         return cmd_loop(cfg, args.dry_run, args.interval)
     if args.cmd == "backfill":
