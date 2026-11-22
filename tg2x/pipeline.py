@@ -55,6 +55,35 @@ def _has_numbers(text: str) -> bool:
     return bool(_NUM_RE.search(body))
 
 
+# 运营文档要求：每篇必须点到具体公司 / 股票代码（cashtag）
+_TICKER_RE = re.compile(r"\$[A-Z]{1,5}\b")
+_COMPANIES = (
+    "nvidia", "amd", "broadcom", "tsmc", "micron", "intel", "qualcomm", "arm",
+    "microsoft", "alphabet", "google", "amazon", "meta", "apple", "oracle", "tesla",
+    "palantir", "supermicro", "sk hynix", "samsung", "coreweave", "nebius",
+    "openai", "anthropic", "xai", "cohere", "mistral",
+)
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9$'’]+", text or ""))
+
+
+def _has_stock_ref(text: str) -> bool:
+    """有 $代码 或点到具体公司名。"""
+    body = text or ""
+    if _TICKER_RE.search(body):
+        return True
+    low = body.lower()
+    return any(c in low for c in _COMPANIES)
+
+
+def _has_hook(text: str) -> bool:
+    """最后一行是问句（互动钩子）。"""
+    lines = [ln.strip() for ln in (text or "").strip().splitlines() if ln.strip()]
+    return bool(lines) and lines[-1].endswith("?")
+
+
 class Pipeline:
     def __init__(self, cfg: Config, dry_run: bool | None = None):
         self.cfg = cfg
@@ -101,6 +130,11 @@ class Pipeline:
         self.prefer_image = bool(cfg.get("publish.prefer_image", True))
         self.image_probe = int(cfg.get("publish.image_probe", 4) or 4)
         self.image_budget = float(cfg.get("publish.image_probe_seconds", 20) or 20)
+        # 风格硬要求（运营文档 + 用户 2026-11-22 指令）：
+        #   每篇必须点到具体的公司/股票代码、最后一行必须是互动问句、没配图就不许写长。
+        self.require_stock = bool(cfg.get("writer.require_stock_ref", True))
+        self.require_hook = bool(cfg.get("writer.require_hook", True))
+        self.max_words_no_image = int(cfg.get("writer.max_words_no_image", 110) or 0)
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -300,6 +334,7 @@ class Pipeline:
         self._fetch_media(post)
 
         text_en = ""
+        has_image = self._has_image(post)
         if post.text.strip():
             # 先清理原文（去标题、去尾巴、去信源），再交给 DeepSeek 写作
             clean = (self.translator._clean_en(post.text) if ch["lang"] == "en"
@@ -308,16 +343,25 @@ class Pipeline:
             kwargs = {}
             if self._writer_takes_avoid:
                 kwargs["avoid"] = self.store.recent_published(5)
-            text_en = self.writer.write(clean, **kwargs)
+            text_en = self._write(clean, has_image=has_image, **kwargs)
             if not text_en:
                 # 翻译直发：段落间空一行
                 text_en = (self.translator._clean_en(post.text) if ch["lang"] == "en"
                            else self.translator.translate(post.text))
                 text_en = _paragraph_spacing(text_en)
+            # 风格硬要求：股票代码 / 互动钩子 / 没图别写长（不合规就定向重写一次）
+            text_en = self._enforce_style(clean, text_en, has_image)
         # 统一品牌前缀（如 "FinBrief Alert: "）
         prefix = self.cfg.get("translate.prefix", "") or ""
         if prefix and text_en and not text_en.startswith(prefix.rstrip()):
             text_en = f"{prefix}{text_en}"
+
+        # 没有公司/股票代码 = 没有具体抓手，宁可不发这条，换下一条
+        if self.require_stock and text_en and not _has_stock_ref(text_en):
+            log.warning("跳过 [%s]：稿子里没有股票代码/公司名", post.key)
+            self.store.record(post, "skipped")
+            self.store.archive(post, {"reason": "no-stock-ref", "text_en": text_en})
+            return "skipped"
 
         # 关键词去重：与最近已发内容高度重复则跳过（纯规则，不用 AI）
         if self.dedup_enabled and text_en and is_duplicate(
@@ -409,6 +453,76 @@ class Pipeline:
                 return str(w)
         return ""
 
+    # ---------- 写作 & 风格 ----------
+    @staticmethod
+    def _supports(fn, name: str) -> bool:
+        try:
+            return name in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+
+    def _write(self, clean: str, has_image: bool, avoid=None, fix: str = "") -> str:
+        """调 writer；按它实际支持的参数传（老版 writer 没有 has_image/fix 也能跑）。"""
+        kwargs = {}
+        if avoid is not None and self._supports(self.writer.write, "avoid"):
+            kwargs["avoid"] = avoid
+        if self._supports(self.writer.write, "has_image"):
+            kwargs["has_image"] = has_image
+        if fix and self._supports(self.writer.write, "fix"):
+            kwargs["fix"] = fix
+        try:
+            return self.writer.write(clean, **kwargs) or ""
+        except TypeError:            # 签名不兼容的兜底
+            return self.writer.write(clean) or ""
+
+    def _has_image(self, post: TgPost) -> bool:
+        """这条候选能不能配上图：探过的直接用结果，没探过就现探一次。"""
+        if not (self.attach_image and (post.url or "").startswith("http")):
+            return False
+        cached = getattr(post, "_img_ready", None)
+        if cached is None:
+            try:
+                cached = bool(media_mod.probe(post.url)[0])
+            except Exception as e:  # noqa: BLE001
+                log.debug("探图失败 %s: %s", post.key, str(e)[:100])
+                cached = False
+            post._img_ready = cached
+        return cached
+
+    def _style_problems(self, text: str, has_image: bool) -> list[str]:
+        """运营文档口径的三条硬要求，返回不合规的说明（空 = 合规）。"""
+        out = []
+        if self.require_stock and not _has_stock_ref(text):
+            out.append("the draft never names a company or a cashtag")
+        if self.require_hook and not _has_hook(text):
+            out.append("the last line must be one engagement question")
+        if (not has_image) and self.max_words_no_image and \
+                _word_count(text) > self.max_words_no_image:
+            out.append(f"there is no image, so cut it under {self.max_words_no_image} words")
+        return out
+
+    def _enforce_style(self, clean: str, text: str, has_image: bool) -> str:
+        """不合规就给 writer 一条定向修改意见，重写一次；仍不合规由调用方决定发不发。"""
+        if not text:
+            return text
+        problems = self._style_problems(text, has_image)
+        if not problems:
+            return text
+        if not self._supports(self.writer.write, "fix"):
+            log.info("风格不合规（%s），但 writer 不支持定向重写，按现稿处理",
+                     "; ".join(problems))
+            return text
+        log.info("风格不合规（%s），定向重写一次", "; ".join(problems))
+        fix = ("The previous draft failed these checks: " + "; ".join(problems)
+               + ". Keep the same facts, fix only that, and return the whole post again.")
+        again = self._write(clean, has_image=has_image, fix=fix)
+        if not again:
+            return text
+        left = self._style_problems(again, has_image)
+        if left:
+            log.warning("重写后仍不合规（%s），按现稿处理", "; ".join(left))
+        return again
+
     # ---------- 配图 ----------
     def _order_by_image(self, ranked: list[tuple[dict, TgPost]]) -> list[tuple[dict, TgPost]]:
         """配图优先：按已有影响力顺序往下看，谁有可用配图就把谁提到第一位。
@@ -430,9 +544,11 @@ class Pipeline:
                 log.debug("探图失败 %s: %s", p.key, str(e)[:100])
                 img = ""
             if img:
+                p._img_ready = True
                 if i:
                     log.info("配图优先：第 %d 条候选有图，提到第一位 [%s]", i + 1, p.key)
                 return [ranked[i]] + ranked[:i] + ranked[i + 1:]
+            p._img_ready = False
             if time.monotonic() - t0 > self.image_budget:
                 log.info("配图优先：探图超时（%.0fs），按原顺序发", self.image_budget)
                 break
