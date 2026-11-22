@@ -15,6 +15,7 @@ on:
         options:
           - run       # 正常跑（有新帖才发，最新1条）
           - dry_run   # 只打印不发
+          - demo      # 只写不发：前 3 条候选各写一版，看文风（不入库）
           - preview   # 发最新一条给我预览
 
 permissions:
@@ -62,6 +63,10 @@ jobs:
             dry_run)
               echo "== dry run =="
               python run.py once --dry-run
+              ;;
+            demo)
+              echo "== demo：前 3 条各写一版，不发不入库 =="
+              python run.py demo --limit 3
               ;;
             preview)
               echo "== 预览：释放最新一条并发送 =="
