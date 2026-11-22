@@ -482,7 +482,7 @@ class Pipeline:
         cached = getattr(post, "_img_ready", None)
         if cached is None:
             try:
-                cached = bool(media_mod.probe(post.url)[0])
+                cached = bool(media_mod.probe(post.url, allow_api=True)[0])
             except Exception as e:  # noqa: BLE001
                 log.debug("探图失败 %s: %s", post.key, str(e)[:100])
                 cached = False
@@ -539,7 +539,8 @@ class Pipeline:
             if not (p.url or "").startswith("http"):
                 continue
             try:
-                img, _credit = media_mod.probe(p.url)
+                # 只有第一条允许走代抓兜底（microlink 免费额度有限），其余只认直连
+                img, _credit = media_mod.probe(p.url, allow_api=(i == 0))
             except Exception as e:  # noqa: BLE001
                 log.debug("探图失败 %s: %s", p.key, str(e)[:100])
                 img = ""
