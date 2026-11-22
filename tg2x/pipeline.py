@@ -409,6 +409,41 @@ class Pipeline:
                 log.warning("图片下载失败 %s: %s", url[:80], e)
         post.media_files = files
 
+    # ---------- 只写不发（调文风用）----------
+    def demo(self, limit: int = 3, require_numbers: bool = True) -> list[dict]:
+        """给排序最前的前 N 条候选各生成一版正文，用来判断文风是否稳定。
+
+        **不发布、不写去重库、不消耗候选**——所以可以反复跑，不会把号发秃。
+        """
+        collected: list[tuple[dict, TgPost]] = []
+        for ch in self.channels:
+            for p in self._gather_channel(ch, {"fetched": 0, "new": 0}):
+                if self.content_filter and content_filter_reason(p.text):
+                    continue
+                if require_numbers and not _has_numbers(p.text):
+                    continue
+                collected.append((ch, p))
+                if len(collected) >= limit:
+                    break
+            if len(collected) >= limit:
+                break
+
+        out: list[dict] = []
+        for ch, p in collected[:limit]:
+            clean = (self.translator._clean_en(p.text) if ch["lang"] == "en"
+                     else self.translator._clean(p.text))
+            try:
+                text = self.writer.write(clean)
+            except Exception as e:  # noqa: BLE001
+                text = f"(writer error: {e})"
+            out.append({
+                "key": p.key,
+                "url": p.url,
+                "headline": (p.text or "").splitlines()[0][:140],
+                "text": text or "(empty)",
+            })
+        return out
+
     # ---------- 回填 ----------
     def backfill(self, limit: int = 20, publish: bool = False) -> dict:
         ch = self.channels[0]
