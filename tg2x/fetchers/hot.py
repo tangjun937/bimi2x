@@ -2,8 +2,11 @@
 
 来源（全部免费、无需凭证）：
   - Hacker News 首页（Algolia API，带 points）
-  - Google News RSS（AI 查询 / 金融市场查询）
-  - arXiv cs.AI / cs.LG 最新论文
+  - Google News RSS：7 组查询，覆盖芯片算力 / 大厂 capex / 财报指引 /
+    AI 融资估值 / 宏观→AI / 板块异动 / 人物表态，不再只盯 Nvidia
+  - TechCrunch AI RSS
+
+`_arxiv()` 的代码先留着，但 fetch() 已不调用：纯论文不符合「AI × 钱」口径。
 
 输出统一成 TgPost（channel="hot"），message_id 由 URL/标题哈希稳定生成，
 所以同一条热点第二次出现会被 store 的去重表挡住；超过保留天数的记录由
@@ -12,7 +15,9 @@ store.purge_older_than() 清掉（默认 5 天）。
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -21,6 +26,9 @@ from xml.etree import ElementTree as ET
 import requests
 
 from ..models import TgPost
+from ..market_clock import node_bonus
+
+log = logging.getLogger("tg2x")
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -35,7 +43,9 @@ _AI_RE = re.compile(
     r"openai|anthropic|deepmind|deepseek|mistral|llama|copilot|agentic|agent|agents|"
     r"model|models|inference|training|gpu|nvidia|amd|tsmc|chip|chips|semiconductors?|"
     r"data cent(?:er|re)|datacenter|cloud|compute|robotics?|autonomous|self-driving|"
-    r"copilot|chatbot"
+    r"copilot|chatbot|palantir|coreweave|broadcom|micron|marvell|qualcomm|intel|"
+    r"supermicro|smci|oracle|salesforce|servicenow|snowflake|databricks|perplexity|"
+    r"mistral|neocloud|hbm|foundry|wafer"
     r")\b",
     re.I,
 )
@@ -56,7 +66,7 @@ _MONEY_RE = re.compile(
 # 重要人物表态也收：他们的观点能带出钱和政策
 _PERSON_RE = re.compile(
     r"\b(musk|trump|altman|jensen huang|huang|zuckerberg|nadella|pichai|thiel|"
-    r"bessent|lutnick|vance|sacks|cook|ellison|oracle|softbank|son)\b",
+    r"bessent|lutnick|vance|sacks|cook|ellison|oracle|softbank|masayoshi son)\b",
     re.I,
 )
 
@@ -72,9 +82,13 @@ def _relevant(text: str) -> bool:
 # 人物权重：总统 > 财团主理人 > 公司本身 > 其他政客
 # 「财团主理人」按影响力算，不按头衔：创始人即使离职（Sutskever / Murati / Karpathy）
 # 仍算该公司最重要的人；AI 团队创始人没有个人财富也算主理人。
-_PERSON_T1 = re.compile(r"\b(president|trump|white house|oval office)\b", re.I)
+_PERSON_T1 = re.compile(
+    r"\b(president\s+(?:trump|donald|biden|vance)|the president|"
+    r"trump|white house|oval office)\b",
+    re.I,
+)
 _PERSON_T2 = re.compile(
-    r"\b(musk|altman|huang|jensen|lisa su|su|zuckerberg|nadella|pichai|bezos|thiel|"
+    r"\b(musk|altman|jensen huang|lisa su|zuckerberg|nadella|pichai|bezos|thiel|"
     r"dimon|fink|masayoshi son|ellison|cook|amodei|hassabis|sutskever|murati|karpathy|"
     r"brockman|lecun|fei-fei li|andrew ng|mensch|srinivasan|alexandr wang|suleyman|"
     r"delangue|mostaque|lutnick|bessent)\b",
@@ -146,6 +160,9 @@ class HotFetcher:
         self.session = requests.Session()
         self.session.trust_env = False
         self.session.headers.update({"User-Agent": user_agent or DEFAULT_UA})
+        # Google News 对同一 IP 的连续请求会 429，7 组查询必须错开
+        self.gnews_delay = 1.8
+        self._gnews_calls = 0
 
     # ---------- 各数据源 ----------
     def _hacker_news(self) -> list[tuple[float, TgPost]]:
@@ -174,7 +191,8 @@ class HotFetcher:
             if _age_hours(dt) > self.max_age_hours:
                 continue
             text = f"{title}\n\n{points} points on Hacker News. Source: {link}"
-            out.append((40.0 + min(points, 500) / 10.0 + _person_bonus(title + " " + story), TgPost(
+            out.append((40.0 + min(points, 500) / 10.0 + _person_bonus(title + " " + story)
+                        + node_bonus(title + " " + story), TgPost(
                 channel="hot",
                 message_id=_hid(link, title),
                 text=text,
@@ -185,6 +203,10 @@ class HotFetcher:
         return out
 
     def _google_news(self, query: str, weight: float = 30.0) -> list[tuple[float, TgPost]]:
+        # 同一 IP 连着打 Google News 会被 429：除第一条外先错开 1.8 秒
+        if self._gnews_calls:
+            time.sleep(self.gnews_delay)
+        self._gnews_calls += 1
         url = (
             "https://news.google.com/rss/search?q="
             + urllib.parse.quote(query)
@@ -194,11 +216,24 @@ class HotFetcher:
 
     def _rss(self, url: str, weight: float, source: str) -> list[tuple[float, TgPost]]:
         out: list[tuple[float, TgPost]] = []
-        try:
-            r = self.session.get(url, timeout=self.timeout)
-            r.raise_for_status()
-            root = ET.fromstring(r.content)
-        except Exception:
+        root = None
+        for attempt in range(1, 4):
+            try:
+                r = self.session.get(url, timeout=self.timeout)
+                if r.status_code == 429:
+                    wait = 4 * attempt
+                    log.warning("%s 被限流(429)，%d 秒后重试（第 %d/3 次）",
+                                source, wait, attempt)
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                root = ET.fromstring(r.content)
+                break
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s 抓取失败（第 %d/3 次）：%s", source, attempt, str(e)[:120])
+                time.sleep(2 * attempt)
+        if root is None:
+            log.error("%s 三次都没抓到，本轮少一个源：%s", source, url[:90])
             return out
         for item in root.iter("item"):
             title = _clean(item.findtext("title") or "")
@@ -218,7 +253,9 @@ class HotFetcher:
             if _age_hours(dt) > self.max_age_hours:
                 continue
             text = f"{title}\n\n{desc}\n\nSource: {link}"
-            out.append((weight + max(0.0, 12.0 - _age_hours(dt)) / 2.0 + _person_bonus(title + " " + desc), TgPost(
+            out.append((weight + max(0.0, 10.0 - _age_hours(dt)) * 0.8
+                        + _person_bonus(title + " " + desc)
+                        + node_bonus(title + " " + desc), TgPost(
                 channel="hot",
                 message_id=_hid(link, title),
                 text=text,
@@ -226,6 +263,8 @@ class HotFetcher:
                 url=link,
                 source=source,
             )))
+        if not out:
+            log.info("%s 没解析出符合口径的条目：%s", source, url[:90])
         return out
 
     def _arxiv(self) -> list[tuple[float, TgPost]]:
@@ -269,12 +308,39 @@ class HotFetcher:
     def fetch(self, limit: int = 30) -> list[TgPost]:
         hn = self._hacker_news()
         google = (
-            # AI 的钱：股价、估值、融资、IPO、芯片生意
-            self._google_news("AI stocks OR Nvidia OR AMD OR OpenAI valuation OR AI funding when:2d", 30.0)
-            # 重要人物对 AI 的表态（马斯克/特朗普等）
-            + self._google_news("Musk AI OR Trump AI OR Altman AI when:2d", 28.0)
-            # AI 交易与监管：订单、垄断、关税、裁员
-            + self._google_news("AI deal OR AI regulation OR AI layoffs OR AI capex when:2d", 26.0)
+            # 1) 芯片 / 算力：整条 AI 硬件链，不只 Nvidia
+            self._google_news(
+                '(Nvidia OR AMD OR Broadcom OR TSMC OR Micron OR Marvell OR Qualcomm) '
+                '("AI chip" OR "AI chips" OR HBM OR GPU OR "data center" OR capex) when:2d',
+                32.0)
+            # 2) 大厂 AI 资本开支：谁在花钱
+            + self._google_news(
+                "(Microsoft OR Alphabet OR Amazon OR Meta OR Oracle OR Apple OR Tesla) "
+                "AI (capex OR spending OR investment OR cloud OR chips) when:2d",
+                30.0)
+            # 3) 财报与指引：盘前 / 盘后的主力
+            + self._google_news(
+                "(Nvidia OR Microsoft OR Alphabet OR Amazon OR Meta OR AMD OR Broadcom "
+                "OR TSMC OR Palantir OR CoreWeave) "
+                "(earnings OR guidance OR outlook OR forecast) when:2d",
+                30.0)
+            # 4) AI 融资 / 估值 / 并购：谁在投钱
+            + self._google_news(
+                "(OpenAI OR Anthropic OR xAI OR Mistral OR Perplexity OR Databricks OR CoreWeave) "
+                "(funding OR valuation OR IPO OR acquisition OR stake) when:2d",
+                27.0)
+            # 5) 宏观数据 → AI 板块
+            + self._google_news(
+                '(Fed OR CPI OR inflation OR "jobs report" OR Powell OR yields) '
+                '(AI OR "tech stocks" OR Nasdaq OR semiconductor) when:2d',
+                26.0)
+            # 6) 个股 / 板块异动：开盘和尾盘最能用的就是这条
+            + self._google_news(
+                '("AI stocks" OR "chip stocks" OR "tech stocks" OR Nasdaq) '
+                "(selloff OR sell-off OR rally OR surge OR plunge OR slump) when:2d",
+                26.0)
+            # 7) 人物表态（权重最高的一层，总统 > 主理人）
+            + self._google_news("(Musk OR Trump OR Altman OR Huang) AI when:2d", 28.0)
         )
         techcrunch = self._rss(
             "https://techcrunch.com/category/artificial-intelligence/feed/", 24.0, "techcrunch"
