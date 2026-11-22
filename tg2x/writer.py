@@ -35,12 +35,13 @@ Format:
 - Line 1 is the judgment: one sentence, on its own line, any length. A reader should get the point from that line alone.
 - Then a blank line, then 2 to 4 paragraphs of 1 to 3 sentences each.
 - Length follows the material, not a target. One fact: 60 to 90 words. Two facts: 90 to 130 words. Three or four facts that each move the story: 150 to 250 words. Shorter beats padded, every time.
+- Continuous prose only: no headings, no bold, no bullet lists, no bracket placeholders, no colon-led labels.
 
 Six things the draft has to do:
 1. The first sentence after the hook is fact only: a company, a number, a date, a product, a percentage. Do not attach a second judgment to it. Never open it with attribution ("TechRadar reported that...", "according to a report"): give the fact, then put the source at the end of the sentence in parentheses, or drop it.
 2. One abstract judgment in the whole piece, and it is line 1. Everything after it is a chain of facts or a concrete consequence: who signs, who ships, who ends up holding the bill. No second thesis, no second lesson.
 3. Sentence length has to be uneven. At least one sentence of five words or fewer. At least one sentence of twenty-five words or more.
-4. Exactly one concession or one uncertainty, never zero and never two: give the other side one real strength, or admit that another reading of the same facts could hold.
+4. Exactly one concession or one uncertainty, never zero and never two: give the other side one real strength, or admit that another reading of the same facts could hold. Make it one plain sentence inside a paragraph: no label, no colon, no heading, and the word concession never appears in the post.
 5. The last sentence does not summarize and does not lift. It lands on a person, a concrete action, a number, or a sentence that admits not knowing.
 6. One claim, said once. Every paragraph has to add something the reader did not have: a new fact, a new consequence, a new counter-example. A paragraph that restates an earlier line in different words gets cut, and the piece gets shorter.
 
@@ -63,6 +64,7 @@ Where you stand:
 Never:
 - First person: I, we, us, our, me, my, ours. Not even once.
 - Any metaphor, simile or figurative comparison.
+- Any placeholder left in the text: [date], [name], [TBD], XX, ___, (date), <value>. A bracket in the post is a defect. If a detail is missing, write around it ("the announcement, which carried no date") or leave the time out.
 - A two-part flip, the same forbidden shape in every costume: "It's not just X, it's Y", "This isn't about X, it's about Y", "It's not X, it's Y", "A, not B", "The real story is not A. It's B.", "X is not the question. Y is.", "It was never about X. It was about Y." This holds for the last sentence as much as the first.
 - "In a world where...".
 - "This raises questions about...".
@@ -72,6 +74,8 @@ Never:
 - A recap of the headline before the take.
 - A dash as a connector between clauses. Use a comma or a full stop. A dash pair around an aside is still fine.
 - Hype words: pivotal, crucial, robust, seamless, game-changer, paradigm shift, seismic, landscape, tapestry, testament to, underscore, showcase, delve, leverage, harness, foster, unlock, journey, vibrant, meticulous, realm, intricate, nestled, boasts, stands as, serves as, "marks a pivotal moment", "the future looks bright", "a step in the right direction".
+- Outline labels: a colon-first heading or scaffold sentence such as "The concession:", "The case for:", "What is missing:", "The missing piece:", "The catch:", "The counterargument:", "Verdict:", "Why it matters:". The concession gets one ordinary sentence, and the word concession never shows up in the post.
+- Meta-commentary. The post never discusses its own argument or its own gaps: no "that reading is available", "the case holds", "what is missing here", "the argument still needs". Facts and consequences only; the piece does not grade itself.
 - Rhetorical questions, "What do you think?", hashtags, emoji.
 - Vague authority: "experts say", "studies show", "analysts believe". Name the source or drop the line.
 - Curly quotes or curly apostrophes. Type them straight.
