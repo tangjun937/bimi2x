@@ -252,7 +252,11 @@ class HotFetcher:
                 dt = datetime.now(timezone.utc)
             if _age_hours(dt) > self.max_age_hours:
                 continue
-            text = f"{title}\n\n{desc}\n\nSource: {link}"
+            # RSS 的 <source> 是媒体名（Livemint / Reuters…），配图署名要靠它
+            src_el = item.find("source")
+            publisher = (src_el.text or "").strip() if src_el is not None else ""
+            src_line = f"{publisher} | {link}" if publisher else link
+            text = f"{title}\n\n{desc}\n\nSource: {src_line}"
             out.append((weight + max(0.0, 10.0 - _age_hours(dt)) * 0.8
                         + _person_bonus(title + " " + desc)
                         + node_bonus(title + " " + desc), TgPost(
