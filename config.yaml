@@ -44,7 +44,9 @@ publish:
   # 图表池优先：发帖时先看 data/chart_queue.json 里有没有跟话题对得上的图表
   # （对标账号 @RyanDetrick / @charliebilello / @LizAnnSonders 的图），有就用它，
   # 没有或不够格再退回文章自己的 og:image。min_score：同代码 +3、同主题词 +1。
-  chart_first: true
+  # 图表池：2026-11-23 用户明确要求"只许用文章自带图、第三方图表一律不用"，所以关掉。
+  # 队列和代码都留着（data/chart_queue.json、tg2x/charts.py），想恢复改回 true 即可。
+  chart_first: false
   chart_credit: true
   # 一致性硬条件：图表必须和稿件同一个主体（同 $代码 或同公司名），
   # 且是 10 天内发的，且分数够（同代码 +3 / 同公司 +2 / 同主题词 +1）。
