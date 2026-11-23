@@ -390,6 +390,25 @@ def _upgrade_google(img: str) -> str:
     return re.sub(r"=s0-w\d+-rw", "=s0-w1200-rw", img)
 
 
+def attach_image_url(url: str) -> str:
+    """把一个已经确定好的图片 URL 挂上去：下载 → 去重 → 提交仓库。返回公网直链。
+
+    图表池（对标账号的图）走这条路；去重口径和文章配图共用一份 ledger。
+    """
+    data, ext = download(url)
+    if not data:
+        return ""
+    digest = hashlib.sha1(data).hexdigest()[:12]
+    if _seen_before(digest):
+        log.info("这张图和最近 %d 天用过的重复（%s），这次不配图", _USED_DAYS, digest[:6])
+        return ""
+    pub = upload(data, ext)
+    if not pub:
+        return ""
+    _remember(digest)
+    return pub
+
+
 def attach(url: str, do_upload: bool = True, credit_hint: str = "") -> tuple[str, str]:
     """完整链路：解析 → 找图 → 下载 → 上传。返回（公网 URL, 署名）。
 
