@@ -88,6 +88,41 @@ def _page(url: str) -> tuple[str, str]:
     return final, html
 
 
+_VIDEO_PATTERNS = (
+    r'<meta[^>]+property=["\']og:video(?::url|:secure_url)?["\'][^>]*content=["\']([^"\']+)["\']',
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:video',
+    r'<meta[^>]+name=["\']twitter:player:stream["\'][^>]*content=["\']([^"\']+)["\']',
+)
+
+
+def probe_media(url: str, allow_api: bool = False) -> tuple[str, str, str]:
+    """看这篇文章带什么媒体：返回 (kind, 图片地址, 视频地址)。
+
+    kind = "video" | "image" | "text"。视频只认能直接喂给 Buffer 的 mp4 直链；
+    其它（YouTube 嵌入页、播放器页）不算——挂了也放不出来。
+    """
+    if not url or not url.startswith("http"):
+        return "text", "", ""
+    final, page = _page(url)
+    img, credit = find_image(page, final) if page else ("", "")
+    vid = ""
+    if page:
+        cand = _first(_VIDEO_PATTERNS, page)
+        if cand:
+            cand = urljoin(final, cand)
+            if ".mp4" in cand.lower():
+                vid = cand
+    if not img and allow_api:
+        api_img, api_credit = _api_image(_target_url(url) or url)
+        if api_img:
+            img, credit = api_img, (api_credit or credit)
+    if vid:
+        return "video", _upgrade_google(img), vid
+    if img:
+        return "image", _upgrade_google(img), ""
+    return "text", "", ""
+
+
 def probe(url: str, allow_api: bool = False) -> tuple[str, str]:
     """只看这篇文章有没有可用配图（不下载、不上传）。返回（图地址, 署名）。
 
