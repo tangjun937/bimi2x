@@ -467,6 +467,11 @@ def attach(url: str, do_upload: bool = True, credit_hint: str = "") -> tuple[str
             credit = credit_hint
     if not credit:
         credit = credit_hint or urlparse(final).netloc.replace("www.", "")
+    art_host = urlparse(final).netloc.replace("www.", "")
+    img_host = urlparse(img).netloc.replace("www.", "")
+    if art_host and img_host:
+        # 审计用：图是哪来的、文章是哪来的，一眼能对上（同源就该同域或同 CDN）
+        log.info("配图来源：%s ← %s", img_host, art_host)
     data, ext = download(img)
     if not data:
         return "", ""
