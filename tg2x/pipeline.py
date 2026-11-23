@@ -12,6 +12,7 @@ from pathlib import Path
 
 import requests
 
+from . import charts as charts_mod
 from . import market_clock
 from . import media as media_mod
 from .adfilter import ad_reason
@@ -133,8 +134,13 @@ class Pipeline:
         # 风格硬要求（运营文档 + 用户 2026-11-22 指令）：
         #   每篇必须点到具体的公司/股票代码、最后一行必须是互动问句、没配图就不许写长。
         self.require_stock = bool(cfg.get("writer.require_stock_ref", True))
-        self.require_hook = bool(cfg.get("writer.require_hook", True))
+        self.require_hook = bool(cfg.get("writer.require_hook", False))
         self.max_words_no_image = int(cfg.get("writer.max_words_no_image", 110) or 0)
+        # 图表池：优先挂对标账号（@RyanDetrick / @charliebilello …）的图表，
+        # 拿不到对得上的再退回文章自己的 og:image。
+        self.chart_first = bool(cfg.get("publish.chart_first", True))
+        self.chart_credit = bool(cfg.get("publish.chart_credit", True))
+        self.chart_min_score = int(cfg.get("publish.chart_min_score", 2) or 2)
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -373,8 +379,16 @@ class Pipeline:
             return "skipped"
 
         item = TransPost(post=post, text_en=text_en)
-        # 配图（只在日志里记署名，正文里不写）
-        self._attach_image(post)
+        # 配图优先级：图表池（和话题对得上的） → 文章 og:image
+        chart = None
+        if self.chart_first and not self.publisher.dry_run and post.text.strip():
+            chart = charts_mod.pick(post.text, self.chart_min_score)
+        used_chart = bool(chart) and self._attach_chart(post, chart)
+        if not used_chart:
+            self._attach_image(post)
+        if used_chart and self.chart_credit:
+            text_en = text_en.rstrip() + f"\n\nChart: @{chart.get('author') or 'Twitter'}"
+            item.text_en = text_en
         item.final_text = self.publisher.build_text(item)
         self.store.mark(post.channel, post.message_id, "translated", text_en=text_en)
         self.store.archive(post, {"text_en": text_en, "final_text": item.final_text,
@@ -555,11 +569,26 @@ class Pipeline:
                 break
         return ranked
 
+    def _attach_chart(self, post: TgPost, chart: dict) -> bool:
+        """挂一张图表池里的图。成功返回 True。"""
+        try:
+            pub = media_mod.attach_image_url(chart.get("image") or "")
+        except Exception as e:  # noqa: BLE001
+            log.warning("挂图表失败（改用文章图）：%s", str(e)[:120])
+            return False
+        if not pub:
+            return False
+        post.media_urls = [pub]
+        log.info("配图：图表池 @%s（tweet %s）", chart.get("author") or "?", chart.get("id"))
+        return True
+
     def _attach_image(self, post: TgPost) -> str:
         """给这条配一张图：文章 og:image → 下载 → 传图床。返回署名，失败返回空串。
 
         配图是加分项：任何一步失败都照常发纯文字，不影响发布。
         """
+        if post.media_urls:          # 图表池已经挂上了
+            return ""
         if not self.attach_image or not (post.url or "").startswith("http"):
             return ""
         dry = bool(self.publisher.dry_run)
