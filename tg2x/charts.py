@@ -73,16 +73,26 @@ def fetch_tweet(tweet_id: str, timeout: int = 25) -> dict | None:
             return None
         j = r.json() or {}
         media = j.get("mediaDetails") or (j.get("entities") or {}).get("media") or []
-        img = ""
+        photo = thumb = video = ""
         for m in media:
-            if m.get("type") == "photo" and m.get("media_url_https"):
-                img = m["media_url_https"] + "?name=large"
-                break
-        if not img:
+            mt = (m.get("type") or "").lower()
+            if mt == "photo" and not photo:
+                photo = m.get("media_url_https") or ""
+            elif mt in ("video", "animated_gif") and not video:
+                thumb = m.get("media_url_https") or ""
+                info = m.get("video_info") or {}
+                variants = [v for v in (info.get("variants") or [])
+                            if (v.get("content_type") or "") == "video/mp4" and v.get("url")]
+                variants.sort(key=lambda v: v.get("bitrate") or 0)
+                if variants:
+                    video = variants[-1]["url"]
+        if not (photo or video):
             return None
         user = (j.get("user") or {}).get("screen_name") or ""
         return {"id": str(tweet_id), "author": user, "text": (j.get("text") or "").strip(),
-                "created": j.get("created_at") or "", "image": img,
+                "created": j.get("created_at") or "",
+                "image": photo or thumb, "video": video,
+                "kind": "video" if video else "photo",
                 "fetched_at": int(time.time())}
     except Exception as e:  # noqa: BLE001
         log.warning("取推文 %s 异常：%s", tweet_id, str(e)[:120])
@@ -126,12 +136,28 @@ def score(post_text: str, item: dict) -> int:
     return s
 
 
+def used_recently(item: dict, days: int = 7) -> bool:
+    ts = item.get("used_at") or 0
+    return bool(ts) and (time.time() - ts) < days * 86400
+
+
+def mark_used(tweet_id: str) -> None:
+    """挂出去之后记一笔，避免下一轮又挑同一张。"""
+    items = load()
+    for it in items:
+        if it.get("id") == str(tweet_id):
+            it["used_at"] = int(time.time())
+    save(items)
+
+
 def pick(post_text: str, min_score: int = 2) -> dict | None:
     """挑一张跟这条稿子最对得上的图表；没有够格的返回 None。"""
-    items = load()
+    items = [it for it in load() if not used_recently(it)]
     if not items:
         return None
-    ranked = sorted(items, key=lambda it: (score(post_text, it), it.get("fetched_at") or 0),
+    ranked = sorted(items, key=lambda it: (score(post_text, it),
+                                           1 if it.get("video") else 0,
+                                           it.get("fetched_at") or 0),
                     reverse=True)
     best = ranked[0]
     if score(post_text, best) < min_score:
