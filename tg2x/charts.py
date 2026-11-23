@@ -35,6 +35,14 @@ _TOPICS = (
     "anthropic", "tesla", "oracle", "s&p", "nasdaq",
 )
 _TICKER = re.compile(r"\$([A-Z]{1,5})\b")
+_COMPANY_NAMES = (
+    "nvidia", "amd", "broadcom", "tsmc", "micron", "intel", "qualcomm", "arm",
+    "microsoft", "alphabet", "google", "amazon", "meta", "apple", "oracle", "tesla",
+    "openai", "anthropic", "xai", "palantir", "supermicro", "samsung", "sk hynix",
+    "coreweave", "nebius", "arm holdings",
+)
+_COMPANY_RE = re.compile(r"\b(" + "|".join(sorted(map(re.escape, _COMPANY_NAMES),
+                                                 key=len, reverse=True)) + r")\b", re.I)
 
 
 def _session() -> requests.Session:
@@ -128,12 +136,33 @@ def _tickers(text: str) -> set[str]:
     return {m.group(1) for m in _TICKER.finditer(text or "")}
 
 
+def _companies(text: str) -> set[str]:
+    return {m.group(1).lower() for m in _COMPANY_RE.finditer(text or "")}
+
+
 def score(post_text: str, item: dict) -> int:
-    """话题重合度：同代码 +3，同主题词 +1（至少一个才算匹配）。"""
+    """重合度：同代码 +3 / 同公司名 +2 / 同主题词 +1。"""
     pt, it = post_text or "", item.get("text") or ""
     s = 3 * len(_tickers(pt) & _tickers(it))
+    s += 2 * len(_companies(pt) & _companies(it))
     s += len(_keywords(pt) & _keywords(it))
     return s
+
+
+def same_entity(post_text: str, item: dict) -> bool:
+    """有没有"同一个主体"：同一个 $代码，或同一家公司名。"""
+    pt, it = post_text or "", item.get("text") or ""
+    return bool((_tickers(pt) & _tickers(it)) or (_companies(pt) & _companies(it)))
+
+
+def _age_days(item: dict) -> float:
+    raw = item.get("created") or ""
+    try:
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 86400
+    except Exception:  # noqa: BLE001
+        return 999.0
 
 
 def used_recently(item: dict, days: int = 7) -> bool:
@@ -150,14 +179,21 @@ def mark_used(tweet_id: str) -> None:
     save(items)
 
 
-def pick(post_text: str, min_score: int = 2) -> dict | None:
-    """挑一张跟这条稿子最对得上的图表；没有够格的返回 None。"""
+def pick(post_text: str, min_score: int = 4, max_age_days: float = 10) -> dict | None:
+    """挑一张跟这条稿子"同源"的图表。
+
+    硬条件（缺一不可）：没用过、够新、**同一个主体**（同代码或同公司）、分数够。
+    宁可这条不配图，也不挂一张跟稿子对不上的图。
+    """
     items = [it for it in load() if not used_recently(it)]
     if not items:
         return None
-    ranked = sorted(items, key=lambda it: (score(post_text, it),
-                                           1 if it.get("video") else 0,
-                                           it.get("fetched_at") or 0),
+    ok = [it for it in items if same_entity(post_text, it) and _age_days(it) <= max_age_days]
+    if not ok:
+        return None
+    ranked = sorted(ok, key=lambda it: (score(post_text, it),
+                                        1 if it.get("video") else 0,
+                                        it.get("fetched_at") or 0),
                     reverse=True)
     best = ranked[0]
     if score(post_text, best) < min_score:
