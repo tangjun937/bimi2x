@@ -145,26 +145,26 @@ class Publisher:
                 due_at = due.strftime("%Y-%m-%dT%H:%M:%SZ")
                 mode = "customScheduled"
                 log.info("同批第 %d 条排到 %d 分钟后发布（%s）", position + 1, delay, due_at)
+            def _create(ass: list[dict]):
+                return client.create_post(channel_id=channel_id, text=item.final_text,
+                                          assets=ass, mode=mode, due_at=due_at)
+
             try:
-                post = client.create_post(
-                    channel_id=channel_id,
-                    text=item.final_text,
-                    assets=assets,
-                    mode=mode,
-                    due_at=due_at,
-                )
+                post = _create(assets)
             except BufferError as e:
-                # 配图是加分项：图被拒（下载失败 / 格式不对）不能连正文一起丢掉
+                # 媒体是加分项：视频/图片被拒不能连正文一起丢掉 → 视频退图、图退纯文字
                 if not assets:
                     raise
-                log.warning("带配图发失败（%s），改发纯文字重试一次", str(e)[:150])
-                post = client.create_post(
-                    channel_id=channel_id,
-                    text=item.final_text,
-                    assets=[],
-                    mode=mode,
-                    due_at=due_at,
-                )
+                if item.post.video_urls and item.post.media_urls:
+                    log.warning("视频发失败（%s），改用图片重试", str(e)[:150])
+                    try:
+                        post = _create(image_assets(item.post.media_urls, limit=1))
+                    except BufferError as e2:
+                        log.warning("图片也被拒（%s），改发纯文字", str(e2)[:150])
+                        post = _create([])
+                else:
+                    log.warning("带配图发失败（%s），改发纯文字重试一次", str(e)[:150])
+                    post = _create([])
             return PublishResult(True, str(post.get("id", "")),
                                  f"buffer post {post.get('id')} dueAt={post.get('dueAt')}")
         except BufferError as e:
