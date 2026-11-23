@@ -232,8 +232,8 @@ class Pipeline:
             if len(ordered) == len(posts):
                 ranked = [(ch_map[id(p)], p) for p in ordered]
 
-        # 2.5 配图优先：按影响力顺序往下探，第一条有图的提到最前面（最多探 N 条 / 限时）
-        ranked = self._order_by_image(ranked)
+        # 2.5 媒体优先：视频 > 图片 > 纯文字（只探前 N 条，层内保持影响力顺序）
+        ranked = self._order_by_media(ranked)
 
         # 候选池：一次只发 max_per_cycle 篇，但最多尝试 max_tries 条——
         # 遇到重复（关键词去重命中）就跳过，换下一条，保证每条都是当场抓到的。
@@ -379,15 +379,23 @@ class Pipeline:
             return "skipped"
 
         item = TransPost(post=post, text_en=text_en)
-        # 配图优先级：图表池（和话题对得上的） → 文章 og:image
+        # 媒体优先级：图表池 → 文章视频 → 文章图 → 纯文字
         chart = None
         if self.chart_first and not self.publisher.dry_run and post.text.strip():
             chart = charts_mod.pick(post.text, self.chart_min_score)
         used_chart = bool(chart) and self._attach_chart(post, chart)
         if not used_chart:
-            self._attach_image(post)
+            kind, img, vid = self._media_of(post)
+            if kind == "video" and vid:
+                post.video_urls = [vid]
+                if img:
+                    post.media_urls = [img]        # 缩略图，失败时还能退回图片帖
+                log.info("配视频：%s", vid[:100])
+            else:
+                self._attach_image(post)
         if used_chart and self.chart_credit:
-            text_en = text_en.rstrip() + f"\n\nChart: @{chart.get('author') or 'Twitter'}"
+            label = "Video" if chart.get("video") else "Chart"
+            text_en = text_en.rstrip() + f"\n\n{label}: @{chart.get('author') or 'Twitter'}"
             item.text_en = text_en
         item.final_text = self.publisher.build_text(item)
         self.store.mark(post.channel, post.message_id, "translated", text_en=text_en)
@@ -489,19 +497,24 @@ class Pipeline:
         except TypeError:            # 签名不兼容的兜底
             return self.writer.write(clean) or ""
 
-    def _has_image(self, post: TgPost) -> bool:
-        """这条候选能不能配上图：探过的直接用结果，没探过就现探一次。"""
+    def _media_of(self, post: TgPost) -> tuple[str, str, str]:
+        """这条候选的媒体类型（探过的直接用，没探过现探）：(kind, 图, 视频)。"""
+        kind = getattr(post, "_media_kind", None)
+        if kind:
+            return kind, getattr(post, "_img_url", "") or "", getattr(post, "_video_url", "") or ""
         if not (self.attach_image and (post.url or "").startswith("http")):
-            return False
-        cached = getattr(post, "_img_ready", None)
-        if cached is None:
-            try:
-                cached = bool(media_mod.probe(post.url, allow_api=True)[0])
-            except Exception as e:  # noqa: BLE001
-                log.debug("探图失败 %s: %s", post.key, str(e)[:100])
-                cached = False
-            post._img_ready = cached
-        return cached
+            return "text", "", ""
+        try:
+            kind, img, vid = media_mod.probe_media(post.url, allow_api=True)
+        except Exception:  # noqa: BLE001
+            kind, img, vid = "text", "", ""
+        post._media_kind, post._img_url, post._video_url = kind, img, vid
+        return kind, img, vid
+
+    def _has_image(self, post: TgPost) -> bool:
+        """这条稿子会不会带图/视频（决定写多长）。"""
+        kind, _img, _vid = self._media_of(post)
+        return kind in ("video", "image")
 
     def _style_problems(self, text: str, has_image: bool) -> list[str]:
         """运营文档口径的三条硬要求，返回不合规的说明（空 = 合规）。"""
@@ -538,40 +551,49 @@ class Pipeline:
         return again
 
     # ---------- 配图 ----------
-    def _order_by_image(self, ranked: list[tuple[dict, TgPost]]) -> list[tuple[dict, TgPost]]:
-        """配图优先：按已有影响力顺序往下看，谁有可用配图就把谁提到第一位。
+    _TIER = {"video": 0, "image": 1, "text": 2}
 
-        只探前 `image_probe` 条、最多花 `image_probe_seconds` 秒；
-        一条都没图 / 超时 / 关掉开关时原样返回（不改变选题顺序）。
+    def _order_by_media(self, ranked: list[tuple[dict, TgPost]]) -> list[tuple[dict, TgPost]]:
+        """媒体优先：视频 > 图片 > 纯文字（只探前 N 条，层内保持原影响力顺序）。
+
+        探不到 / 超时 / 关掉开关时原样返回。
         """
         if not (self.prefer_image and self.attach_image) or len(ranked) < 2:
             return ranked
         if getattr(self.publisher, "dry_run", False):
-            return ranked                      # dry-run 只验文风，不多花时间抓图
+            return ranked                      # dry-run 只验文风，不多花时间探媒体
         t0 = time.monotonic()
+        tiers: dict[int, str] = {}
         for i, (_ch, p) in enumerate(ranked[:self.image_probe]):
             if not (p.url or "").startswith("http"):
                 continue
             try:
-                # 只有第一条允许走代抓兜底（microlink 免费额度有限），其余只认直连
-                img, _credit = media_mod.probe(p.url, allow_api=(i == 0))
+                # 只有第一条允许走代抓兜底（microlink 免费额度有限）
+                kind, img, vid = media_mod.probe_media(p.url, allow_api=(i == 0))
             except Exception as e:  # noqa: BLE001
-                log.debug("探图失败 %s: %s", p.key, str(e)[:100])
-                img = ""
-            if img:
-                p._img_ready = True
-                if i:
-                    log.info("配图优先：第 %d 条候选有图，提到第一位 [%s]", i + 1, p.key)
-                return [ranked[i]] + ranked[:i] + ranked[i + 1:]
-            p._img_ready = False
+                log.debug("探媒体失败 %s: %s", p.key, str(e)[:100])
+                kind, img, vid = "text", "", ""
+            p._media_kind, p._img_url, p._video_url = kind, img, vid
+            tiers[id(p)] = kind
             if time.monotonic() - t0 > self.image_budget:
-                log.info("配图优先：探图超时（%.0fs），按原顺序发", self.image_budget)
+                log.info("探媒体超时（%.0fs），剩下的按原顺序", self.image_budget)
                 break
-        return ranked
+        if not tiers:
+            return ranked
+        head = ranked[:self.image_probe]
+        head.sort(key=lambda cp: self._TIER.get(tiers.get(id(cp[1]), "text"), 3))
+        return head + ranked[len(head):]
 
     def _attach_chart(self, post: TgPost, chart: dict) -> bool:
-        """挂一张图表池里的图。成功返回 True。"""
+        """挂一张图表池里的图/视频。成功返回 True。"""
         try:
+            if chart.get("video"):
+                post.video_urls = [chart["video"]]
+                if chart.get("image"):
+                    post.media_urls = [chart["image"]]
+                charts_mod.mark_used(str(chart.get("id") or ""))
+                log.info("配视频：图表池 @%s（tweet %s）", chart.get("author") or "?", chart.get("id"))
+                return True
             pub = media_mod.attach_image_url(chart.get("image") or "")
         except Exception as e:  # noqa: BLE001
             log.warning("挂图表失败（改用文章图）：%s", str(e)[:120])
@@ -579,6 +601,7 @@ class Pipeline:
         if not pub:
             return False
         post.media_urls = [pub]
+        charts_mod.mark_used(str(chart.get("id") or ""))
         log.info("配图：图表池 @%s（tweet %s）", chart.get("author") or "?", chart.get("id"))
         return True
 
