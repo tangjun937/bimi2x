@@ -41,6 +41,12 @@ publish:
   prefer_image: true
   image_probe: 4
   image_probe_seconds: 20
+  # 图表池优先：发帖时先看 data/chart_queue.json 里有没有跟话题对得上的图表
+  # （对标账号 @RyanDetrick / @charliebilello / @LizAnnSonders 的图），有就用它，
+  # 没有或不够格再退回文章自己的 og:image。min_score：同代码 +3、同主题词 +1。
+  chart_first: true
+  chart_credit: true
+  chart_min_score: 2
 
   buffer:
     token_env: "BUFFER_TOKEN"
