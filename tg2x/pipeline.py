@@ -140,7 +140,8 @@ class Pipeline:
         # 拿不到对得上的再退回文章自己的 og:image。
         self.chart_first = bool(cfg.get("publish.chart_first", True))
         self.chart_credit = bool(cfg.get("publish.chart_credit", True))
-        self.chart_min_score = int(cfg.get("publish.chart_min_score", 2) or 2)
+        self.chart_min_score = int(cfg.get("publish.chart_min_score", 4) or 4)
+        self.chart_max_age = float(cfg.get("publish.chart_max_age_days", 10) or 10)
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -382,7 +383,10 @@ class Pipeline:
         # 媒体优先级：图表池 → 文章视频 → 文章图 → 纯文字
         chart = None
         if self.chart_first and not self.publisher.dry_run and post.text.strip():
-            chart = charts_mod.pick(post.text, self.chart_min_score)
+            chart = charts_mod.pick(post.text, self.chart_min_score, self.chart_max_age)
+            if not chart:
+                log.info("图表池没有和这条同源的图（同代码/同公司 + %.0f 天内），用文章自己的图",
+                         self.chart_max_age)
         used_chart = bool(chart) and self._attach_chart(post, chart)
         if not used_chart:
             kind, img, vid = self._media_of(post)
