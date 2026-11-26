@@ -28,6 +28,14 @@ from .writer import NewsWriter, content_filter_reason
 
 log = logging.getLogger("tg2x")
 
+_LONG_HINT = ("MODE: LONG COLUMN. Write the full piece for this story: every number in the "
+              "source that matters, the mechanism in plain words, and who ends up holding the "
+              "cost. Up to 25,000 characters. Stop when the chain is complete, not at a word count.")
+
+_SHORT_HINT = ("MODE: SHORT POST. 90-140 words, at most two paragraphs. Keep the single strongest "
+               "number and the party whose cash flow changes; drop everything else, including the "
+               "policy background. Do not summarise a longer draft - write it short from the start.")
+
 
 def _paragraph_spacing(text: str) -> str:
     """把单个换行提升为段落间空行（\n\n），保留已有空行。
@@ -164,7 +172,8 @@ class Pipeline:
         # 每日配额：一个发布日（18:00→次日 08:20）最多发几条，其中一篇写长文
         self.daily_max = int(cfg.get("fetch.daily_max", 0) or 0)
         self.long_per_day = bool(cfg.get("publish.long_per_day", True))
-        self.long_hour = int(cfg.get("publish.long_at_hour", 21) or 21)
+        self.long_hour = int(cfg.get("publish.long_at_hour", 4) or 4)
+        self.long_minute = int(cfg.get("publish.long_at_minute", 30) or 0)
 
     # ---------- 每日配额 ----------
     def _bj_now(self):
@@ -238,8 +247,11 @@ class Pipeline:
         if self.daily_max and used >= self.daily_max:
             log.info("今日配额已满（%d/%d），本轮不发", used, self.daily_max)
             return result
-        long_mode = bool(self.long_per_day and not long_used and
-                         self._bj_hour() >= self.long_hour)
+        now_bj = self._bj_now()
+        mins = now_bj.hour * 60 + now_bj.minute
+        long_start = self.long_hour * 60 + self.long_minute
+        long_mode = bool(self.long_per_day and not long_used
+                         and long_start <= mins < long_start + 45)
         if long_mode:
             log.info("今日长文档：这一篇按长文写（配额 %d/%d）", used, self.daily_max)
 
@@ -403,12 +415,11 @@ class Pipeline:
             kwargs = {}
             if self._writer_takes_avoid:
                 kwargs["avoid"] = self.store.recent_published(5)
+            # 走 writer 的 fix 通道下"篇幅"指令，不动 writer.py 的签名
             if long_mode:
-                # 走 writer 的 fix 通道下"长文"指令，不动 writer.py 的签名
-                kwargs["fix"] = ("MODE: LONG COLUMN. Write the full piece for this story: every number "
-                                 "in the source that matters, the mechanism in plain words, and who ends "
-                                 "up holding the cost. Up to 25,000 characters. Stop when the chain is "
-                                 "complete, not at a word count.")
+                kwargs["fix"] = _LONG_HINT
+            else:
+                kwargs["fix"] = _SHORT_HINT
             text_en = self._write(clean, has_image=has_image, **kwargs)
             if not text_en:
                 # 翻译直发：段落间空一行
