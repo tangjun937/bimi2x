@@ -42,6 +42,7 @@ publish:
   long_per_day: true
   # 德国黄金档 20:00-23:00 CET = 北京 03:00-06:00；长文放在中间那档（04:30）
   long_at_hour: 4
+  long_at_minute: 30
   # 配图：从文章页取 og:image → 提交到仓库 media/ → raw 链接交给 Buffer
   attach_image: true
   # 有配图的优先：按影响力顺序往下探前 N 条候选，谁有图就把谁提到第一位再发。
