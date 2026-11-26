@@ -40,7 +40,7 @@ publish:
   # 每天一篇长文：到 long_at_hour（北京）这一档还没写过长文，就按长文写；
   # 其余档一律写短文。当日长文已用 / 配额用满，就不再写长文。
   long_per_day: true
-  long_at_hour: 21
+  long_at_hour: 20
   # 配图：从文章页取 og:image → 提交到仓库 media/ → raw 链接交给 Buffer
   attach_image: true
   # 有配图的优先：按影响力顺序往下探前 N 条候选，谁有图就把谁提到第一位再发。
