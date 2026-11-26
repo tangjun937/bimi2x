@@ -37,12 +37,14 @@ publish:
   max_len: 25000
   # 发文是否带上 Telegram 原文链接（false = 只发正文，不带链接）
   include_source_link: false
-  # 每天一篇长文：到 long_at_hour（北京）这一档还没写过长文，就按长文写；
-  # 其余档一律写短文。当日长文已用 / 配额用满，就不再写长文。
+  # 发布时间用发布时区的本地时间定义（TZID），夏令时由 zoneinfo 自动处理：
+  # 德国中午 12:00 开跑，最后一档 22:30（美股 16:00 ET 收盘之后）。
+  slots_tz: "Europe/Berlin"
+  slots: ["12:00", "14:30", "17:00", "19:30", "22:30"]
+  slot_tolerance_minutes: 12
+  # 每天一篇长文：命中这个档位就写长文，其余档写短文
   long_per_day: true
-  # 德国黄金档 20:00-23:00 CET = 北京 03:00-06:00；长文放在中间那档（04:30）
-  long_at_hour: 4
-  long_at_minute: 30
+  long_slot: "19:30"
   # 配图：从文章页取 og:image → 提交到仓库 media/ → raw 链接交给 Buffer
   attach_image: true
   # 有配图的优先：按影响力顺序往下探前 N 条候选，谁有图就把谁提到第一位再发。
