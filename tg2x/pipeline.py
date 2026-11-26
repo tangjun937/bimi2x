@@ -7,7 +7,7 @@ import logging
 import mimetypes
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -149,6 +149,35 @@ class Pipeline:
         self.drop_overflow = bool(cfg.get("cleanup.drop_overflow", False))
         # 记录保留天数：热点模式写过的内容只保留 N 天，过期删除。0 = 不清理
         self.retention_days = int(cfg.get("cleanup.retention_days", 0) or 0)
+        # 每日配额：一个发布日（18:00→次日 08:20）最多发几条，其中一篇写长文
+        self.daily_max = int(cfg.get("fetch.daily_max", 0) or 0)
+        self.long_per_day = bool(cfg.get("publish.long_per_day", True))
+        self.long_hour = int(cfg.get("publish.long_at_hour", 21) or 21)
+
+    # ---------- 每日配额 ----------
+    def _bj_now(self):
+        return datetime.now(market_clock.BJ)
+
+    def _bj_hour(self) -> int:
+        return self._bj_now().hour
+
+    def _day_key(self) -> str:
+        """发布日：18:00 之后算今天；00:00–12:00 算前一天（同一夜）。"""
+        now = self._bj_now()
+        day = now.date() if now.hour >= 12 else (now - timedelta(days=1)).date()
+        return day.isoformat()
+
+    def _daily_state(self) -> tuple[str, int, bool]:
+        day = self._day_key()
+        used = int(self.store.get_meta(f"pub_{day}_n", "0") or 0)
+        long_used = (self.store.get_meta(f"pub_{day}_long", "0") or "0") == "1"
+        return day, used, long_used
+
+    def _bump_daily(self, long_mode: bool) -> None:
+        day, used, _ = self._daily_state()
+        self.store.set_meta(f"pub_{day}_n", str(used + 1))
+        if long_mode:
+            self.store.set_meta(f"pub_{day}_long", "1")
 
     @staticmethod
     def _parse_channels(cfg: Config) -> list[dict]:
@@ -190,6 +219,17 @@ class Pipeline:
                 log.info("不在发布窗口（%s），本轮不发布", why)
                 return result
         log.info("市场时钟：%s", market_clock.describe())
+
+        # 每日配额：一个"发布日" = 北京 18:00 → 次日 08:20（跨午夜算同一天）。
+        # 配额里留 1 篇长文（默认 21:00 这一档写），其余按短文写。
+        day_key, used, long_used = self._daily_state()
+        if self.daily_max and used >= self.daily_max:
+            log.info("今日配额已满（%d/%d），本轮不发", used, self.daily_max)
+            return result
+        long_mode = bool(self.long_per_day and not long_used and
+                         self._bj_hour() >= self.long_hour)
+        if long_mode:
+            log.info("今日长文档：这一篇按长文写（配额 %d/%d）", used, self.daily_max)
 
         # 1. 收集所有频道的新帖（开启合规过滤时，先过滤避免占用发文名额）
         candidates: list[tuple[dict, TgPost]] = []
@@ -260,7 +300,7 @@ class Pipeline:
             result["new"] += 1
             status = "failed"
             try:
-                status = self._handle(post, ch, publish=publish, position=0)
+                status = self._handle(post, ch, publish=publish, position=0, long_mode=long_mode)
             except Exception as e:  # noqa: BLE001
                 log.exception("处理失败 %s: %s", post.key, e)
                 self.store.mark(post.channel, post.message_id, "failed", error=str(e)[:500])
@@ -324,7 +364,8 @@ class Pipeline:
         except Exception:  # noqa: BLE001
             return False
 
-    def _handle(self, post: TgPost, ch: dict, publish: bool = True, position: int = 0) -> str:
+    def _handle(self, post: TgPost, ch: dict, publish: bool = True, position: int = 0,
+                long_mode: bool = False) -> str:
         """返回 published / skipped / failed 三种状态之一。"""
         if not post.text.strip() and not post.media_urls:
             self.store.record(post, "skipped")
@@ -350,14 +391,21 @@ class Pipeline:
             kwargs = {}
             if self._writer_takes_avoid:
                 kwargs["avoid"] = self.store.recent_published(5)
+            if long_mode:
+                # 走 writer 的 fix 通道下"长文"指令，不动 writer.py 的签名
+                kwargs["fix"] = ("MODE: LONG COLUMN. Write the full piece for this story: every number "
+                                 "in the source that matters, the mechanism in plain words, and who ends "
+                                 "up holding the cost. Up to 25,000 characters. Stop when the chain is "
+                                 "complete, not at a word count.")
             text_en = self._write(clean, has_image=has_image, **kwargs)
             if not text_en:
                 # 翻译直发：段落间空一行
                 text_en = (self.translator._clean_en(post.text) if ch["lang"] == "en"
                            else self.translator.translate(post.text))
                 text_en = _paragraph_spacing(text_en)
-            # 风格硬要求：股票代码 / 互动钩子 / 没图别写长（不合规就定向重写一次）
-            text_en = self._enforce_style(clean, text_en, has_image)
+            # 风格硬要求：股票代码 / cashtag / 没图别写长（不合规就定向重写）
+            text_en = self._enforce_style(clean, text_en, has_image,
+                                          mode_fix=kwargs.get("fix", ""))
         # 统一品牌前缀（如 "FinBrief Alert: "）
         prefix = self.cfg.get("translate.prefix", "") or ""
         if prefix and text_en and not text_en.startswith(prefix.rstrip()):
@@ -422,6 +470,7 @@ class Pipeline:
                 return "published"
             self.store.mark(post.channel, post.message_id, "published",
                             tweet_id=res.tweet_id, error=None)
+            self._bump_daily(long_mode)
             log.info("已发 X [%s] tweet=%s", post.key, res.tweet_id or "?")
             self._items.append({"key": post.key, "text": item.final_text, "error": None})
             return "published"
@@ -536,7 +585,8 @@ class Pipeline:
                        f"cut it to {self.max_words_no_image} or fewer by dropping a fact")
         return out
 
-    def _enforce_style(self, clean: str, text: str, has_image: bool) -> str:
+    def _enforce_style(self, clean: str, text: str, has_image: bool,
+                       mode_fix: str = "") -> str:
         """不合规就给 writer 一条定向修改意见，重写一次；仍不合规由调用方决定发不发。"""
         if not text:
             return text
@@ -555,6 +605,8 @@ class Pipeline:
             if attempt:
                 fix += (" Hard cut now: delete one whole paragraph or the weakest sentences, "
                         "do not reword them into longer clauses.")
+            if mode_fix:
+                fix = mode_fix + " " + fix
             again = self._write(clean, has_image=has_image, fix=fix)
             if not again:
                 return cur
