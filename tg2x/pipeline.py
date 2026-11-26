@@ -457,6 +457,10 @@ class Pipeline:
                 log.info("配视频：%s", vid[:100])
             else:
                 self._attach_image(post)
+        if long_mode:
+            log.info("长文配图：%s（%d 张/条视频）",
+                     "有" if (post.media_urls or post.video_urls) else "无",
+                     len(post.media_urls) + len(post.video_urls))
         if used_chart and self.chart_credit:
             label = "Video" if chart.get("video") else "Chart"
             text_en = text_en.rstrip() + f"\n\n{label}: @{chart.get('author') or 'Twitter'}"
