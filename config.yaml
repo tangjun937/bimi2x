@@ -110,7 +110,8 @@ writer:
   # 结尾不强制问句——跟着句意走（要读者表态时才问），所以 require_hook 关掉。
   require_stock_ref: true
   require_hook: false
-  max_words_no_image: 110
+  # 0 = 不限制（用户 2026-11-26：上限 2.5 万字符）
+  max_words_no_image: 0
 
 # 发文优先级排序
 rank:
