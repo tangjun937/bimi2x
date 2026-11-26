@@ -408,9 +408,14 @@ class Pipeline:
         text_en = ""
         has_image = self._has_image(post)
         if post.text.strip():
-            # 先清理原文（去标题、去尾巴、去信源），再交给 DeepSeek 写作
-            clean = (self.translator._clean_en(post.text) if ch["lang"] == "en"
-                     else self.translator._clean(post.text))
+            # 素材优先用文章正文（数字、引用都在里面）；拿不到才退回 RSS 摘要
+            body = self._body_text(post)
+            if body and ch["lang"] == "en":
+                clean = body
+                log.info("写作素材：正文 %d 字符", len(body))
+            else:
+                clean = (self.translator._clean_en(post.text) if ch["lang"] == "en"
+                         else self.translator._clean(post.text))
             # 反重复：把最近 5 条已发正文交给 writer，要求别复用它们的开头/结尾句式
             kwargs = {}
             if self._writer_takes_avoid:
@@ -576,6 +581,19 @@ class Pipeline:
             return self.writer.write(clean, **kwargs) or ""
         except TypeError:            # 签名不兼容的兜底
             return self.writer.write(clean) or ""
+
+    def _body_text(self, post: TgPost, max_chars: int = 6000) -> str:
+        """这条选题的正文（用于写作素材）。页面在探媒体时已经抓过，走缓存。"""
+        if not (post.url or "").startswith("http"):
+            return ""
+        try:
+            _final, page = media_mod._page(post.url)
+            if not page:
+                return ""
+            return media_mod.extract_text(page, max_chars)
+        except Exception as e:  # noqa: BLE001
+            log.debug("取正文失败 %s: %s", post.key, str(e)[:100])
+            return ""
 
     def _media_of(self, post: TgPost) -> tuple[str, str, str]:
         """这条候选的媒体类型（探过的直接用，没探过现探）：(kind, 图, 视频)。"""
