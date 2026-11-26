@@ -178,6 +178,7 @@ class Pipeline:
         self.slots = [str(x) for x in (cfg.get("publish.slots", None) or [])]
         self.slot_tolerance = int(cfg.get("publish.slot_tolerance_minutes", 12) or 12)
         self.long_slot = str(cfg.get("publish.long_slot", "") or "")
+        self.slot_gate = bool(cfg.get("publish.slot_gate", True))
 
     # ---------- 每日配额 ----------
     def _bj_now(self):
@@ -270,7 +271,8 @@ class Pipeline:
             log.info("今日配额已满（%d/%d），本轮不发", used, self.daily_max)
             return result
         slot = self._slot_now()
-        if publish and not getattr(self.publisher, "dry_run", False) and not slot:
+        if (self.slot_gate and publish
+                and not getattr(self.publisher, "dry_run", False) and not slot):
             log.info("不在发布档位（%s 现在的 %s），本轮不发",
                      self.slots_tz, self._now_in_tz().strftime("%H:%M"))
             return result
