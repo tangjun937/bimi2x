@@ -42,6 +42,8 @@ publish:
   slots_tz: "Europe/Berlin"
   slots: ["12:00", "14:30", "17:00", "19:30", "22:30"]
   slot_tolerance_minutes: 12
+  # false = 不做"是否为档位"的拦截（Windows 已按固定时刻触发）；只用来判断哪一档写长文
+  slot_gate: false
   # 每天一篇长文：命中这个档位就写长文，其余档写短文
   long_per_day: true
   long_slot: "19:30"
