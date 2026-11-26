@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html as html_lib
 import json
 import logging
 import os
@@ -93,6 +94,60 @@ _VIDEO_PATTERNS = (
     r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:video',
     r'<meta[^>]+name=["\']twitter:player:stream["\'][^>]*content=["\']([^"\']+)["\']',
 )
+
+
+def extract_text(html: str, max_chars: int = 6000) -> str:
+    """从文章页抠正文（给写作当素材：RSS 摘要太薄，数字都在正文里）。
+
+    只取 <p> 段落，去掉脚本/样式/导航；太短的段落（版权、按钮）丢掉。
+    """
+    if not html:
+        return ""
+    body = re.sub(r"<(script|style|noscript|nav|footer|header)[^>]*>.*?</\1>", " ",
+                  html, flags=re.S | re.I)
+    paras = re.findall(r"<p[^>]*>(.*?)</p>", body, flags=re.S | re.I)
+    out: list[str] = []
+    for p in paras:
+        t = re.sub(r"<[^>]+>", " ", p)
+        t = html_lib.unescape(t)
+        t = re.sub(r"\s+", " ", t).strip()
+        if len(t) < 60:
+            continue
+        if t in out:
+            continue
+        out.append(t)
+        if sum(len(x) for x in out) > max_chars:
+            break
+    return "\n\n".join(out)[:max_chars]
+
+
+_CHART_HINT = re.compile(r"(chart|graph|figure|data|table|plot|cdn|upload|media|images)", re.I)
+
+
+def find_chart(html: str, base_url: str) -> str:
+    """优先找正文里的大图（图表/表格），找不到返回空串。
+
+    只认带明确宽高、宽度 ≥600 的 <img>，避免把图标、头像、logo 当成配图。
+    """
+    best, best_w = "", 0
+    for m in re.finditer(r"<img\b[^>]*>", html or "", flags=re.I):
+        tag = m.group(0)
+        src = re.search(r' src=["\']([^"\']+)["\']', tag, re.I)
+        if not src:
+            continue
+        url = urljoin(base_url, html_lib.unescape(src.group(1)))
+        if not url.startswith("http"):
+            continue
+        w = re.search(r'width=["\']?(\d+)', tag, re.I)
+        h = re.search(r'height=["\']?(\d+)', tag, re.I)
+        width = int(w.group(1)) if w else 0
+        height = int(h.group(1)) if h else 0
+        if width < 600 or height and height < 200:
+            continue
+        weight = width + (200 if _CHART_HINT.search(url) else 0)
+        if weight > best_w:
+            best, best_w = url, weight
+    return best
 
 
 def probe_media(url: str, allow_api: bool = False) -> tuple[str, str, str]:
@@ -454,7 +509,11 @@ def attach(url: str, do_upload: bool = True, credit_hint: str = "") -> tuple[str
     if not url or not url.startswith("http"):
         return "", ""
     final, page = _page(url)      # 上一轮 probe 抓过的页面直接复用
-    img, credit = find_image(page, final) if page else ("", "")
+    img, credit = "", ""
+    if page:
+        img = find_chart(page, final)          # 正文里的大图/图表优先
+        if not img:
+            img, credit = find_image(page, final)
     if not img:                   # 发布方反爬 / 页面没给 og:image：代抓一张
         api_img, api_credit = _api_image(_target_url(url) or url)
         if api_img:
