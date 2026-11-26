@@ -8,6 +8,7 @@ import mimetypes
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import requests
@@ -172,8 +173,11 @@ class Pipeline:
         # 每日配额：一个发布日（18:00→次日 08:20）最多发几条，其中一篇写长文
         self.daily_max = int(cfg.get("fetch.daily_max", 0) or 0)
         self.long_per_day = bool(cfg.get("publish.long_per_day", True))
-        self.long_hour = int(cfg.get("publish.long_at_hour", 4) or 4)
-        self.long_minute = int(cfg.get("publish.long_at_minute", 30) or 0)
+        # 档位按"发布时区"的本地时间定义（TZID），夏令时由 zoneinfo 自动处理
+        self.slots_tz = str(cfg.get("publish.slots_tz", "Europe/Berlin") or "Europe/Berlin")
+        self.slots = [str(x) for x in (cfg.get("publish.slots", None) or [])]
+        self.slot_tolerance = int(cfg.get("publish.slot_tolerance_minutes", 12) or 12)
+        self.long_slot = str(cfg.get("publish.long_slot", "") or "")
 
     # ---------- 每日配额 ----------
     def _bj_now(self):
@@ -181,6 +185,24 @@ class Pipeline:
 
     def _bj_hour(self) -> int:
         return self._bj_now().hour
+
+    def _now_in_tz(self):
+        return datetime.now(ZoneInfo(self.slots_tz))
+
+    def _slot_now(self) -> str:
+        """现在是否正落在某个发布档位（容差内）；命中返回该档位字符串。"""
+        if not self.slots:
+            return "always"
+        now = self._now_in_tz()
+        for s in self.slots:
+            try:
+                hh, mm = (int(x) for x in s.split(":"))
+            except ValueError:
+                continue
+            target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if abs((now - target).total_seconds()) <= self.slot_tolerance * 60:
+                return s
+        return ""
 
     def _day_key(self) -> str:
         """发布日：18:00 之后算今天；00:00–12:00 算前一天（同一夜）。"""
@@ -247,13 +269,16 @@ class Pipeline:
         if self.daily_max and used >= self.daily_max:
             log.info("今日配额已满（%d/%d），本轮不发", used, self.daily_max)
             return result
-        now_bj = self._bj_now()
-        mins = now_bj.hour * 60 + now_bj.minute
-        long_start = self.long_hour * 60 + self.long_minute
-        long_mode = bool(self.long_per_day and not long_used
-                         and long_start <= mins < long_start + 45)
+        slot = self._slot_now()
+        if publish and not getattr(self.publisher, "dry_run", False) and not slot:
+            log.info("不在发布档位（%s 现在的 %s），本轮不发",
+                     self.slots_tz, self._now_in_tz().strftime("%H:%M"))
+            return result
+        long_mode = bool(self.long_per_day and not long_used and slot
+                         and self.long_slot and slot == self.long_slot)
         if long_mode:
-            log.info("今日长文档：这一篇按长文写（配额 %d/%d）", used, self.daily_max)
+            log.info("今日长文档（%s %s）：这一篇按长文写（配额 %d/%d）",
+                     self.slots_tz, slot, used, self.daily_max)
 
         # 1. 收集所有频道的新帖（开启合规过滤时，先过滤避免占用发文名额）
         candidates: list[tuple[dict, TgPost]] = []
