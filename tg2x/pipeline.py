@@ -525,11 +525,15 @@ class Pipeline:
         out = []
         if self.require_stock and not _has_stock_ref(text):
             out.append("the draft never names a company or a cashtag")
+        elif self.require_stock and not _TICKER_RE.search(text or "") and \
+                any(c in (text or "").lower() for c in _COMPANIES):
+            out.append("the draft names a listed company but has no cashtag: add it, e.g. ($ANT)")
         if self.require_hook and not _has_hook(text):
             out.append("the last line must be one engagement question")
         if (not has_image) and self.max_words_no_image and \
                 _word_count(text) > self.max_words_no_image:
-            out.append(f"there is no image, so cut it under {self.max_words_no_image} words")
+            out.append(f"no image is attached and this draft is {_word_count(text)} words: "
+                       f"cut it to {self.max_words_no_image} or fewer by dropping a fact")
         return out
 
     def _enforce_style(self, clean: str, text: str, has_image: bool) -> str:
@@ -543,16 +547,23 @@ class Pipeline:
             log.info("风格不合规（%s），但 writer 不支持定向重写，按现稿处理",
                      "; ".join(problems))
             return text
-        log.info("风格不合规（%s），定向重写一次", "; ".join(problems))
-        fix = ("The previous draft failed these checks: " + "; ".join(problems)
-               + ". Keep the same facts, fix only that, and return the whole post again.")
-        again = self._write(clean, has_image=has_image, fix=fix)
-        if not again:
-            return text
-        left = self._style_problems(again, has_image)
-        if left:
-            log.warning("重写后仍不合规（%s），按现稿处理", "; ".join(left))
-        return again
+        cur = text
+        for attempt in range(2):          # 最多两次定向重写：缺代码/缺钩子/太长
+            log.info("风格不合规（%s），定向重写第 %d 次", "; ".join(problems), attempt + 1)
+            fix = ("The previous draft failed these checks: " + "; ".join(problems)
+                   + ". Keep the same facts, fix only that, and return the whole post again.")
+            if attempt:
+                fix += (" Hard cut now: delete one whole paragraph or the weakest sentences, "
+                        "do not reword them into longer clauses.")
+            again = self._write(clean, has_image=has_image, fix=fix)
+            if not again:
+                return cur
+            cur = again
+            problems = self._style_problems(cur, has_image)
+            if not problems:
+                return cur
+        log.warning("重写两次后仍不合规（%s），按现稿处理", "; ".join(problems))
+        return cur
 
     # ---------- 配图 ----------
     _TIER = {"video": 0, "image": 1, "text": 2}
