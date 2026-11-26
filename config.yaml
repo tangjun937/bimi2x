@@ -21,6 +21,9 @@ fetch:
   max_per_cycle: 1
   # 最多尝试多少条候选：前几条撞重复也还能换一条发出去
   max_tries: 8
+  # 每日发文配额（用户 2026-11-26：一天 5 篇 = 1 长 + 4 短）。
+  # "一天"按发布日算：北京 18:00 → 次日 08:20 跨午夜仍算同一天。0 = 不限制
+  daily_max: 5
   request_timeout: 20
 
 publish:
@@ -34,6 +37,10 @@ publish:
   max_len: 25000
   # 发文是否带上 Telegram 原文链接（false = 只发正文，不带链接）
   include_source_link: false
+  # 每天一篇长文：到 long_at_hour（北京）这一档还没写过长文，就按长文写；
+  # 其余档一律写短文。当日长文已用 / 配额用满，就不再写长文。
+  long_per_day: true
+  long_at_hour: 21
   # 配图：从文章页取 og:image → 提交到仓库 media/ → raw 链接交给 Buffer
   attach_image: true
   # 有配图的优先：按影响力顺序往下探前 N 条候选，谁有图就把谁提到第一位再发。
