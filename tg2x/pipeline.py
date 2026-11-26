@@ -79,6 +79,18 @@ def _has_stock_ref(text: str) -> bool:
     return any(c in low for c in _COMPANIES)
 
 
+_BANNED_TEMPLATES = (
+    "who pays?", "the payer is", "the payer, then, is", "the collector is",
+    "what to watch", "keep an eye on", "next quarter, watch",
+    "one thing is clear", "ultimately,",
+)
+
+
+def _banned_hits(text: str) -> list[str]:
+    low = (text or "").lower()
+    return [p for p in _BANNED_TEMPLATES if p in low]
+
+
 def _has_hook(text: str) -> bool:
     """最后一行是问句（互动钩子）。"""
     lines = [ln.strip() for ln in (text or "").strip().splitlines() if ln.strip()]
@@ -579,6 +591,10 @@ class Pipeline:
             out.append("the draft names a listed company but has no cashtag: add it, e.g. ($ANT)")
         if self.require_hook and not _has_hook(text):
             out.append("the last line must be one engagement question")
+        banned = _banned_hits(text)
+        if banned:
+            out.append("these template lines are banned: " + ", ".join(repr(b) for b in banned)
+                       + " - say the same thing without the label")
         if (not has_image) and self.max_words_no_image and \
                 _word_count(text) > self.max_words_no_image:
             out.append(f"no image is attached and this draft is {_word_count(text)} words: "
