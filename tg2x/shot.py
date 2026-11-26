@@ -168,10 +168,13 @@ def _capture_once(url: str, wait: float = 6.0, timeout: int = 40) -> bytes:
         return b""
     finally:
         try:
-            proc.kill()
-            proc.wait(timeout=5)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         except Exception:
-            pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
         shutil.rmtree(profile, ignore_errors=True)   # 用完就关、临时目录也删掉
 
 
