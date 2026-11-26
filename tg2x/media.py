@@ -99,24 +99,36 @@ _VIDEO_PATTERNS = (
 def extract_text(html: str, max_chars: int = 6000) -> str:
     """从文章页抠正文（给写作当素材：RSS 摘要太薄，数字都在正文里）。
 
-    只取 <p> 段落，去掉脚本/样式/导航；太短的段落（版权、按钮）丢掉。
+    优先只取 <article> 里面的段落；没有就退回全页 <p>。侧栏、相关阅读、
+    订阅提示、版权行这些都丢掉——它们混进来会污染事实。
     """
     if not html:
         return ""
-    body = re.sub(r"<(script|style|noscript|nav|footer|header)[^>]*>.*?</\1>", " ",
+    body = re.sub(r"<(script|style|noscript|nav|footer|header|aside)[^>]*>.*?</\1>", " ",
                   html, flags=re.S | re.I)
-    paras = re.findall(r"<p[^>]*>(.*?)</p>", body, flags=re.S | re.I)
+    scope = body
+    art = re.search(r"<article[^>]*>(.*?)</article>", body, flags=re.S | re.I)
+    if art:
+        scope = art.group(1)
+    skip = ("read more", "related:", "related ", "sign up", "subscribe", "advertisement",
+            "follow us", "all rights reserved", "cookie", "download the app", "newsletter",
+            "share this", "listen to", "watch:", "photo:", "image:", "getty images",
+            "reporting by", "editing by")
+    paras = re.findall(r"<p[^>]*>(.*?)</p>", scope, flags=re.S | re.I)
     out: list[str] = []
     for p in paras:
         t = re.sub(r"<[^>]+>", " ", p)
         t = html_lib.unescape(t)
         t = re.sub(r"\s+", " ", t).strip()
-        if len(t) < 60:
+        if len(t) < 80:
+            continue
+        low = t.lower()
+        if any(k in low for k in skip):
             continue
         if t in out:
             continue
         out.append(t)
-        if sum(len(x) for x in out) > max_chars:
+        if len(out) >= 15 or sum(len(x) for x in out) > max_chars:
             break
     return "\n\n".join(out)[:max_chars]
 
@@ -384,6 +396,14 @@ def download(url: str, timeout: int = 25) -> tuple[bytes, str]:
         return b"", ""
 
 
+_SCREENSHOT = os.environ.get("TG2X_SCREENSHOT", "1") != "0"
+
+
+def _screenshot_enabled() -> bool:
+    """截图开关（环境变量 TG2X_SCREENSHOT=0 可关）。"""
+    return _SCREENSHOT
+
+
 def _gh_token() -> str:
     return (os.environ.get("MEDIA_UPLOAD_TOKEN") or os.environ.get("GITHUB_TOKEN")
             or os.environ.get("GITHUB_PAT") or "").strip()
@@ -509,20 +529,24 @@ def attach(url: str, do_upload: bool = True, credit_hint: str = "") -> tuple[str
     if not url or not url.startswith("http"):
         return "", ""
     final, page = _page(url)      # 上一轮 probe 抓过的页面直接复用
-    img, credit = "", ""
-    if page:
-        img = find_chart(page, final)          # 正文里的大图/图表优先
-        if not img:
-            img, credit = find_image(page, final)
-    if not img and _screenshot_enabled():      # 页面里没有现成的图：截一张图表
+    # 1) 数据截图优先：页面上的图表/表格（用完即关的无头 Edge）
+    if _screenshot_enabled():
         from . import shot as shot_mod
         png = shot_mod.capture(_target_url(url) or url)
         if png:
-            pub = upload(png, ".png")
-            if pub:
-                _remember(hashlib.sha1(png).hexdigest()[:12])
-                log.info("配图：文章页截图（%d KB）", len(png) // 1024)
-                return pub, credit or "screenshot"
+            digest = hashlib.sha1(png).hexdigest()[:12]
+            if not _seen_before(digest):
+                pub = upload(png, ".png")
+                if pub:
+                    _remember(digest)
+                    log.info("配图：数据截图（%d KB）", len(png) // 1024)
+                    return pub, "screenshot"
+    # 2) 正文里的大图 / 3) og:image
+    img, credit = "", ""
+    if page:
+        img = find_chart(page, final)
+        if not img:
+            img, credit = find_image(page, final)
     if not img:                   # 发布方反爬 / 页面没给 og:image：代抓一张
         api_img, api_credit = _api_image(_target_url(url) or url)
         if api_img:
