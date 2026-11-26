@@ -514,6 +514,15 @@ def attach(url: str, do_upload: bool = True, credit_hint: str = "") -> tuple[str
         img = find_chart(page, final)          # 正文里的大图/图表优先
         if not img:
             img, credit = find_image(page, final)
+    if not img and _screenshot_enabled():      # 页面里没有现成的图：截一张图表
+        from . import shot as shot_mod
+        png = shot_mod.capture(_target_url(url) or url)
+        if png:
+            pub = upload(png, ".png")
+            if pub:
+                _remember(hashlib.sha1(png).hexdigest()[:12])
+                log.info("配图：文章页截图（%d KB）", len(png) // 1024)
+                return pub, credit or "screenshot"
     if not img:                   # 发布方反爬 / 页面没给 og:image：代抓一张
         api_img, api_credit = _api_image(_target_url(url) or url)
         if api_img:
