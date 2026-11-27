@@ -178,6 +178,9 @@ class Pipeline:
         self.chart_max_age = float(cfg.get("publish.chart_max_age_days", 10) or 10)
         # 自制数据图：把稿子里的数字画成柱状图（优先于截图/文章图）
         self.chart_gen = bool(cfg.get("publish.chart_gen", True))
+        self.chart_gen_per_day = int(cfg.get("publish.chart_gen_per_day", 1) or 1)
+        # 图片必须有数字：没有自制图也没有图表截图时，换话题不发
+        self.require_numeric_image = bool(cfg.get("publish.require_numeric_image", True))
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -231,6 +234,15 @@ class Pipeline:
         used = int(self.store.get_meta(f"pub_{day}_n", "0") or 0)
         long_used = (self.store.get_meta(f"pub_{day}_long", "0") or "0") == "1"
         return day, used, long_used
+
+    def _chart_used_today(self) -> bool:
+        day, _used, _long = self._daily_state()
+        return int(self.store.get_meta(f"pub_{day}_chart", "0") or 0) >= self.chart_gen_per_day
+
+    def _mark_chart_today(self) -> None:
+        day, _used, _long = self._daily_state()
+        n = int(self.store.get_meta(f"pub_{day}_chart", "0") or 0) + 1
+        self.store.set_meta(f"pub_{day}_chart", str(n))
 
     def _bump_daily(self, long_mode: bool) -> None:
         day, used, _ = self._daily_state()
@@ -500,8 +512,10 @@ class Pipeline:
             return "skipped"
 
         item = TransPost(post=post, text_en=text_en)
-        # 0) 自制数据图：稿子里的数字直接画一张（最稳的"有数字"配图）
-        if self.chart_gen and not self.publisher.dry_run and text_en.strip():
+        # 图片必须有数字：① 自制数据图（每天 1 张） ② 页面图表截图 ③ 都没有就换话题
+        numeric_img = False
+        if (self.chart_gen and not self.publisher.dry_run and text_en.strip()
+                and not self._chart_used_today()):
             try:
                 spec = chartgen.spec_from_text(self.writer._chat, clean or post.text, text_en)
                 if spec:
@@ -509,32 +523,49 @@ class Pipeline:
                     pub = media_mod.upload_bytes(png, ".png")
                     if pub:
                         post.media_urls = [pub]
-                        log.info("配图：自制数据图 %s（%d 条）", spec.get("title", "")[:40],
+                        self._mark_chart_today()
+                        numeric_img = True
+                        log.info("配图：自制数据图「%s」（%d 条）", str(spec.get("title", ""))[:40],
                                  len(spec.get("items") or []))
             except Exception as e:  # noqa: BLE001
-                log.warning("自制数据图失败（改用截图/文章图）：%s", str(e)[:120])
-        # 媒体优先级：自制图 → 图表池 → 文章视频 → 文章图 → 纯文字
+                log.warning("自制数据图失败：%s", str(e)[:120])
+        if not numeric_img and not self.publisher.dry_run and \
+                (post.url or "").startswith("http") and media_mod._screenshot_enabled():
+            try:
+                from . import shot as shot_mod
+                png = shot_mod.capture(media_mod._target_url(post.url) or post.url)
+                if png:
+                    pub = media_mod.upload_bytes(png, ".png")
+                    if pub:
+                        post.media_urls = [pub]
+                        numeric_img = True
+                        log.info("配图：页面图表截图（%d KB）", len(png) // 1024)
+            except Exception as e:  # noqa: BLE001
+                log.warning("图表截图失败：%s", str(e)[:120])
+        if not numeric_img and self.require_numeric_image and not self.publisher.dry_run:
+            log.info("跳过 [%s]：没有带数字的图（自制图今天已用完 / 页面也没图表），换下一条",
+                     post.key)
+            self.store.record(post, "skipped")
+            self.store.archive(post, {"reason": "no-numeric-image", "text_en": text_en})
+            return "skipped"
+        # 兜底（仅在 require_numeric_image=false 或 dry-run 时才会走到）
         chart = None
-        if self.chart_first and not self.publisher.dry_run and post.text.strip():
-            chart = charts_mod.pick(post.text, self.chart_min_score, self.chart_max_age)
-            if not chart:
-                log.info("图表池没有和这条同源的图（同代码/同公司 + %.0f 天内），用文章自己的图",
-                         self.chart_max_age)
-        used_chart = bool(post.media_urls) or (bool(chart) and self._attach_chart(post, chart))
-        if not used_chart:
-            kind, img, vid = self._media_of(post)
-            if kind == "video" and vid:
-                post.video_urls = [vid]
-                if img:
-                    post.media_urls = [img]        # 缩略图，失败时还能退回图片帖
-                log.info("配视频：%s", vid[:100])
-            else:
-                self._attach_image(post)
-        if long_mode:
-            log.info("长文配图：%s（%d 张/条视频）",
-                     "有" if (post.media_urls or post.video_urls) else "无",
-                     len(post.media_urls) + len(post.video_urls))
-        if used_chart and self.chart_credit:
+        used_chart = bool(post.media_urls)
+        if not used_chart and not self.publisher.dry_run:
+            if self.chart_first and post.text.strip():
+                chart = charts_mod.pick(post.text, self.chart_min_score, self.chart_max_age)
+                used_chart = bool(chart) and self._attach_chart(post, chart)
+            if not used_chart:
+                kind, img, vid = self._media_of(post)
+                if kind == "video" and vid:
+                    post.video_urls = [vid]
+                    if img:
+                        post.media_urls = [img]
+                    log.info("配视频：%s", vid[:100])
+                else:
+                    self._attach_image(post)
+                used_chart = bool(post.media_urls)
+        if chart and used_chart and self.chart_credit:
             label = "Video" if chart.get("video") else "Chart"
             text_en = text_en.rstrip() + f"\n\n{label}: @{chart.get('author') or 'Twitter'}"
             item.text_en = text_en
