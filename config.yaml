@@ -31,6 +31,10 @@ publish:
   # false = 只发接入之后的新帖（推荐）
   publish_existing_on_boot: false
   dry_run: false
+  # 草稿模式（2026-11-27 起）：只写 data/drafts/ 下的 md，不调 Buffer、不上 X。
+  # 先看稿，说"可以发"再把这里改回 false。
+  draft_only: false
+  draft_dir: "data/drafts"
   # buffer | command | http | dry_run
   target: "buffer"
   # jianglin124 开了蓝 V（X Premium），单条上限 25000 字，不再截断
@@ -62,6 +66,8 @@ publish:
   chart_first: false
   # 自制数据图：把稿子里的数字画成柱状图（优先于截图/文章图）
   chart_gen: true
+  # FRED 宏观数据（配图与素材）
+  fred: true
   # 自制数据图每天最多几张
   chart_gen_per_day: 4
   # 图片必须有数字：没有自制图也没有图表截图就换话题
@@ -133,10 +139,26 @@ writer:
   require_hook: false
   # 0 = 不限制（用户 2026-11-26：上限 2.5 万字符）
   max_words_no_image: 0
+  # 正文低于这个字符数就不写，换下一条候选。防的是"正文抓不到、退回 RSS 标题、
+  # 模型照编一整篇"——2026-11-27 实测 343 字符素材编出了一条不存在的 Bloomberg 报道。
+  min_body_chars: 800
+  # 素材里拼一段当日行情（同题材标的的收盘/涨跌/距 60 日高），给写手第二来源的数字。
+  # 这是"1,314 个基点"这类句子能自然出现的前提：素材里必须先有数。
+  market_block: true
+  market_symbols_max: 3
+
+# SEC EDGAR（观点稿 facts pool 用）。User-Agent 必须带联系方式，SEC 会拒匿名请求。
+edgar:
+  user_agent: "tg2x research (contact: admin@example.com)"
+  proxy: ""
+
+# FRED：信用利差与利率（观点稿 facts pool 用）。免费 key，申请后写进 .env。
+fred:
+  api_key_env: "FRED_API_KEY"
+  proxy: ""
 
 # 发文优先级排序
-rank:
-  # 热点模式关掉 DeepSeek 排序：抓取器已按「总统 > 财团主理人 > 其他政客 + 热度」排好
+rank:  # 热点模式关掉 DeepSeek 排序：抓取器已按「总统 > 财团主理人 > 其他政客 + 热度」排好
   enabled: false
   # true = 主题优先(github项目 > 传统金融含股市 > 虚拟货币)；false = 媒体优先(视频>图文>无图冲突>普通)
   topic_first: true
