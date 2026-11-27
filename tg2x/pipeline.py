@@ -15,7 +15,9 @@ from pathlib import Path
 import requests
 
 from . import chartgen
+from . import fred as fred_mod
 from . import charts as charts_mod
+from . import chan
 from . import market_clock
 from . import media as media_mod
 from .adfilter import ad_reason
@@ -77,6 +79,44 @@ _COMPANIES = (
     "palantir", "supermicro", "sk hynix", "samsung", "coreweave", "nebius",
     "openai", "anthropic", "xai", "cohere", "mistral",
 )
+
+# 公司名 -> 行情代码（素材里认出主体后，拼当日行情用）
+_SYMBOL_OF = {
+    "nvidia": "nvda", "amd": "amd", "broadcom": "avgo", "tsmc": "tsm",
+    "micron": "mu", "intel": "intc", "qualcomm": "qcom", "arm": "arm",
+    "microsoft": "msft", "alphabet": "googl", "google": "googl",
+    "amazon": "amzn", "meta": "meta", "apple": "aapl", "oracle": "orcl",
+    "tesla": "tsla", "palantir": "pltr", "supermicro": "smci",
+    "coreweave": "crwv", "nebius": "nbis",
+}
+
+_NUM_TOKEN = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def _num_key(tok: str) -> str:
+    """149.30 / 149.3 / 1,314 归一，便于和素材比对。"""
+    t = tok.replace(",", "")
+    if "." in t:
+        t = t.rstrip("0").rstrip(".")
+    return t
+
+
+def _numbers_in(text: str) -> set[str]:
+    return {_num_key(m.group(0)) for m in _NUM_TOKEN.finditer(text or "")}
+
+
+def _unsourced_numbers(source: str, text: str) -> list[str]:
+    """稿子里有、素材里没有的数字。只报告，不拦截（模型算出来的差值也可能对）。
+
+    这条挡的是 2026-11-27 那个 case：素材里没有 800，稿子写了 "below 800"。
+    """
+    src = _numbers_in(source)
+    out: list[str] = []
+    for m in _NUM_TOKEN.finditer(text or ""):
+        tok = m.group(0)
+        if _num_key(tok) not in src and tok not in out:
+            out.append(tok)
+    return out
 
 
 def _tidy_paragraphs(text: str) -> str:
@@ -175,6 +215,17 @@ class Pipeline:
         self.require_stock = bool(cfg.get("writer.require_stock_ref", True))
         self.require_hook = bool(cfg.get("writer.require_hook", False))
         self.max_words_no_image = int(cfg.get("writer.max_words_no_image", 110) or 0)
+        # 素材硬门：正文太薄就不写（正文抓不到时 pipeline 会退回 RSS 标题，模型会照编）
+        self.min_body_chars = int(cfg.get("writer.min_body_chars", 0) or 0)
+        # 素材里拼当日行情：给写手第二来源的数字
+        self.market_block = bool(cfg.get("writer.market_block", False))
+        self.market_max = int(cfg.get("writer.market_symbols_max", 3) or 3)
+        # 草稿模式：只落 md，不调 Buffer
+        self.draft_only = bool(cfg.get("publish.draft_only", False))
+        # FRED 宏观序列（有 FRED_API_KEY 时启用）
+        self.fred_enabled = bool(cfg.get("publish.fred", True))
+        self.draft_dir = Path(cfg.path_of("publish.draft_dir", "data/drafts"))
+        self._mkt_cache: dict[str, str] = {}
         # 图表池：优先挂对标账号（@RyanDetrick / @charliebilello …）的图表，
         # 拿不到对得上的再退回文章自己的 og:image。
         self.chart_first = bool(cfg.get("publish.chart_first", True))
@@ -313,7 +364,7 @@ class Pipeline:
 
     # ---------- 一轮 ----------
     def cycle(self, publish: bool = True) -> dict:
-        result = {"fetched": 0, "new": 0, "published": 0, "failed": 0, "skipped": 0}
+        result = {"fetched": 0, "new": 0, "published": 0, "drafted": 0, "failed": 0, "skipped": 0}
         self._items = []
 
         # 发布窗口：北京时间 18:00 -> 次日 08:20（cron 用 UTC 写死，夏令时不影响）。
@@ -410,7 +461,7 @@ class Pipeline:
 
         # 3. 逐条处理：发够 max_per_cycle 篇就停；重复的跳过换下一条
         for ch, post in planned:
-            if result["published"] >= self.max_per_cycle:
+            if result["published"] + result["drafted"] >= self.max_per_cycle:
                 break
             result["new"] += 1
             status = "failed"
@@ -482,7 +533,7 @@ class Pipeline:
     def _chan_cycle(self, publish: bool = True) -> dict:
         """缠论档：随机选一只热门票，按缠论画图（笔/中枢/信号）并写成一篇。"""
         from . import chan as chan_mod
-        result = {"fetched": 0, "new": 0, "published": 0, "failed": 0, "skipped": 0}
+        result = {"fetched": 0, "new": 0, "published": 0, "drafted": 0, "failed": 0, "skipped": 0}
         if not publish or getattr(self.publisher, "dry_run", False):
             return result
         day = self._day_key()
@@ -551,16 +602,41 @@ class Pipeline:
 
         text_en = ""
         clean = ""
+        audit: list[str] = []
         has_image = self._has_image(post)
         if post.text.strip():
             # 素材优先用文章正文（数字、引用都在里面）；拿不到才退回 RSS 摘要
+            fred_meta = None
+            fct = ""
+            if self.fred_enabled and (post.text or "").strip():
+                fred_meta = fred_mod.pick(post.text)
+                if fred_meta:
+                    fct = fred_mod.fact(*fred_meta)
+                    if fct:
+                        log.info("FRED 数据：%s | %s", fred_meta[0], fct[:90])
             body = self._body_text(post)
+            if fct:
+                body = ((body + "\n\n" + fct) if body else fct)
             if body and ch["lang"] == "en":
                 clean = body
                 log.info("写作素材：正文 %d 字符", len(body))
             else:
                 clean = (self.translator._clean_en(post.text) if ch["lang"] == "en"
                          else self.translator._clean(post.text))
+            # 硬门：正文抓不到时会退回 RSS 标题，模型会拿它编出一整篇"事实"。
+            # 素材太薄就不写，换下一条候选——宁可少发一条，也不发一条编的。
+            # 有 FRED 硬数据时，正文短一点也放行（数字是官方的，不是编的）
+            if (self.min_body_chars and len(clean) < self.min_body_chars and not fct):
+                log.info("跳过 [%s]：素材只有 %d 字符（< %d），不写，换下一条",
+                         post.key, len(clean), self.min_body_chars)
+                self.store.record(post, "skipped")
+                self.store.archive(post, {"reason": "thin-body", "chars": len(clean)})
+                return "skipped"
+            # 第二来源：当日行情。没有它，稿子只能复述这一篇新闻。
+            mkt = self._market_block(clean)
+            if mkt:
+                clean = clean.rstrip() + "\n\n" + mkt
+                log.info("素材加入行情：%d 个标的", mkt.count("\n"))
             # 反重复：把最近 5 条已发正文交给 writer，要求别复用它们的开头/结尾句式
             kwargs = {}
             if self._writer_takes_avoid:
@@ -580,6 +656,10 @@ class Pipeline:
             text_en = self._enforce_style(clean, text_en, has_image,
                                           mode_fix=kwargs.get("fix", ""))
             text_en = _tidy_paragraphs(text_en)
+            # 数字溯源：稿子里有、素材里没有的数（只报告，不拦）
+            audit = _unsourced_numbers(clean, text_en)
+            if audit:
+                log.warning("无来源数字 [%s]：%s", post.key, ", ".join(audit[:10]))
         # 统一品牌前缀（如 "FinBrief Alert: "）
         prefix = self.cfg.get("translate.prefix", "") or ""
         if prefix and text_en and not text_en.startswith(prefix.rstrip()):
@@ -604,8 +684,21 @@ class Pipeline:
         item = TransPost(post=post, text_en=text_en)
         # 图片必须有数字：① 自制数据图（每天 1 张） ② 页面图表截图 ③ 都没有就换话题
         numeric_img = False
-        if (self.chart_gen and not self.publisher.dry_run and text_en.strip()
-                and not self._chart_used_today()):
+        if (self.fred_enabled and fred_meta
+                and not (self.publisher.dry_run or self.draft_only)):
+            try:
+                png = fred_mod.render(*fred_meta)
+                if png:
+                    pub = media_mod.upload_bytes(png, ".png", dedupe=False)
+                    if pub:
+                        post.media_urls = [pub]
+                        numeric_img = True
+                        log.info("配图：FRED %s（%s）", fred_meta[0], fred_meta[1])
+            except Exception as e:  # noqa: BLE001
+                log.warning("FRED 配图失败：%s", str(e)[:120])
+        if (not numeric_img and self.chart_gen
+                and not (self.publisher.dry_run or self.draft_only)
+                and text_en.strip() and not self._chart_used_today()):
             try:
                 spec = chartgen.spec_from_text(self.writer._chat, clean or post.text, text_en)
                 if spec:
@@ -620,10 +713,10 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 log.warning("自制数据图失败：%s", str(e)[:120])
         # 截图不参与"数字图"判定（页面 canvas 是否真图表不可靠），只当普通配图兜底
-        allow_plain = (role == "plain") and not self._plain_used_today()
-        numeric_required = role in ("long_chart", "chart")
+        allow_plain = (getattr(self, "_role", "text") == "plain") and not self._plain_used_today()
+        numeric_required = getattr(self, "_role", "text") in ("long_chart", "chart")
         if (not numeric_img and numeric_required
-                and not allow_plain and not self.publisher.dry_run):
+                and not allow_plain and not (self.publisher.dry_run or self.draft_only)):
             log.info("跳过 [%s]：没有带数字的图（%s），换下一条", post.key,
                      "长文必须有数字" if long_mode else "今天的无数字名额已用完")
             self.store.record(post, "skipped")
@@ -633,7 +726,7 @@ class Pipeline:
         # 兜底（仅在 require_numeric_image=false 或 dry-run 时才会走到）
         chart = None
         used_chart = bool(post.media_urls)
-        if not used_chart and not self.publisher.dry_run:
+        if not used_chart and not (self.publisher.dry_run or self.draft_only):
             if self.chart_first and post.text.strip():
                 chart = charts_mod.pick(post.text, self.chart_min_score, self.chart_max_age)
                 used_chart = bool(chart) and self._attach_chart(post, chart)
@@ -656,6 +749,12 @@ class Pipeline:
         self.store.archive(post, {"text_en": text_en, "final_text": item.final_text,
                                   "archived_at": now_iso()})
         log.info("译文 [%s] %s", post.key, text_en.replace("\n", " ")[:120])
+
+        if self.draft_only:
+            fp = self._write_draft(post, item, clean, audit)
+            self.store.mark(post.channel, post.message_id, "translated", text_en=text_en)
+            log.info("草稿 [%s] -> %s（未发）", post.key, fp)
+            return "drafted"
 
         if not publish:
             self.store.mark(post.channel, post.message_id, "translated")
@@ -767,6 +866,77 @@ class Pipeline:
             log.debug("取正文失败 %s: %s", post.key, str(e)[:100])
             return ""
 
+    def _market_block(self, text: str) -> str:
+        """素材里认出主体，拼一段当日行情：收盘 / 当日涨跌 / 距 60 日高。
+
+        只在 writer.market_block 打开时生效；拉不到就返回空串，不影响主流程。
+        这是让稿子能写出"1,314 个基点"那类句子的前提——素材里得先有数。
+        """
+        if not self.market_block:
+            return ""
+        syms: list[str] = []
+        for m in _TICKER_RE.finditer(text or ""):
+            s = m.group(0).lstrip("$").lower()
+            if s not in syms:
+                syms.append(s)
+        low = (text or "").lower()
+        for name, sym in _SYMBOL_OF.items():
+            if name in low and sym not in syms:
+                syms.append(sym)
+        rows: list[str] = []
+        for sym in syms[:self.market_max]:
+            if sym not in self._mkt_cache:
+                row = ""
+                try:
+                    b = chan.bars(sym, rng="6mo")
+                except Exception as e:  # noqa: BLE001
+                    log.debug("行情失败 %s: %s", sym, str(e)[:80])
+                    b = []
+                if len(b) >= 2:
+                    close, prev = b[-1]["c"], b[-2]["c"]
+                    hi = (max(x["c"] for x in b[-60:]) if len(b) >= 60
+                          else max(x["c"] for x in b))
+                    row = (f"{sym.upper()} ${close:.2f}, "
+                           f"{(close / prev - 1) * 100:+.2f}% today, "
+                           f"{(close / hi - 1) * 100:+.1f}% from its "
+                           f"60-session high of ${hi:.2f}")
+                self._mkt_cache[sym] = row
+            if self._mkt_cache[sym]:
+                rows.append(self._mkt_cache[sym])
+        if not rows:
+            return ""
+        return "[MARKET DATA - latest close, own calculation]\n" + "\n".join(rows)
+
+    def _write_draft(self, post: TgPost, item: TransPost, clean: str,
+                     audit: list[str]) -> Path:
+        """草稿模式：把待发稿落成 md，成稿 / 素材 / 无来源数字一屏看完。"""
+        self.draft_dir.mkdir(parents=True, exist_ok=True)
+        day = (post.posted_at or now_iso())[:10]
+        fp = self.draft_dir / f"{day}_{post.message_id}.md"
+        title = (post.text or post.key).splitlines()[0][:80]
+        body = item.final_text or item.text_en or ""
+        fp.write_text("\n".join([
+            f"# {title}",
+            "",
+            f"- key: `{post.key}`",
+            f"- 起草: {now_iso()}",
+            f"- 来源: {post.url or '(无)'}",
+            f"- 素材: {len(clean)} 字符",
+            f"- 无来源数字: {', '.join(audit) if audit else '无'}",
+            "",
+            "## 成稿",
+            "",
+            body,
+            "",
+            "## 写作素材",
+            "",
+            "```",
+            clean,
+            "```",
+            "",
+        ]), encoding="utf-8")
+        return fp
+
     def _media_of(self, post: TgPost) -> tuple[str, str, str]:
         """这条候选的媒体类型（探过的直接用，没探过现探）：(kind, 图, 视频)。"""
         kind = getattr(post, "_media_kind", None)
@@ -782,7 +952,9 @@ class Pipeline:
         return kind, img, vid
 
     def _has_image(self, post: TgPost) -> bool:
-        """这条稿子会不会带图/视频（决定写多长）。"""
+        """这条稿子会不会带图/视频（决定写多长）。草稿模式不探图，按有图写短文。"""
+        if self.publisher.dry_run or self.draft_only:
+            return True
         kind, _img, _vid = self._media_of(post)
         return kind in ("video", "image")
 
@@ -848,8 +1020,8 @@ class Pipeline:
         """
         if not (self.prefer_image and self.attach_image) or len(ranked) < 2:
             return ranked
-        if getattr(self.publisher, "dry_run", False):
-            return ranked                      # dry-run 只验文风，不多花时间探媒体
+        if getattr(self.publisher, "dry_run", False) or self.draft_only:
+            return ranked                      # dry-run / 草稿只验文风，不多花时间探媒体
         t0 = time.monotonic()
         tiers: dict[int, str] = {}
         for i, (_ch, p) in enumerate(ranked[:self.image_probe]):
@@ -928,6 +1100,8 @@ class Pipeline:
 
     # ---------- 图片落地 ----------
     def _fetch_media(self, post: TgPost) -> None:
+        if self.draft_only:
+            return
         if not self.archive_media or not post.media_urls:
             return
         files: list[str] = []
@@ -985,14 +1159,14 @@ class Pipeline:
     def backfill(self, limit: int = 20, publish: bool = False) -> dict:
         ch = self.channels[0]
         posts = self._fetcher(ch["name"]).fetch(limit=limit)
-        out = {"fetched": len(posts), "new": 0, "published": 0, "failed": 0}
+        out = {"fetched": len(posts), "new": 0, "published": 0, "drafted": 0, "failed": 0}
         for idx, p in enumerate(posts):
             if self.store.seen(p.channel, p.message_id):
                 continue
             out["new"] += 1
             try:
                 status = self._handle(p, ch, publish=publish, position=idx)
-                out["published" if status == "published" else "failed"] += 1
+                out[status if status in out else "failed"] += 1
             except Exception as e:  # noqa: BLE001
                 out["failed"] += 1
                 log.error("回填失败 %s: %s", p.key, e)
