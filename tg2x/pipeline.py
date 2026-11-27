@@ -13,6 +13,7 @@ from pathlib import Path
 
 import requests
 
+from . import chartgen
 from . import charts as charts_mod
 from . import market_clock
 from . import media as media_mod
@@ -163,6 +164,8 @@ class Pipeline:
         self.chart_credit = bool(cfg.get("publish.chart_credit", True))
         self.chart_min_score = int(cfg.get("publish.chart_min_score", 4) or 4)
         self.chart_max_age = float(cfg.get("publish.chart_max_age_days", 10) or 10)
+        # 自制数据图：把稿子里的数字画成柱状图（优先于截图/文章图）
+        self.chart_gen = bool(cfg.get("publish.chart_gen", True))
         # 新鲜度过滤：只发最近 N 小时内的帖子，超过的直接跳过（防止频道更新慢时补发旧闻）
         self.max_age_hours = int(cfg.get("cleanup.max_age_hours", 0) or 0)
         # 溢出丢弃：超过 max_per_cycle 的部分直接标记跳过（24h扫一次的视频号用）。
@@ -433,6 +436,7 @@ class Pipeline:
         self._fetch_media(post)
 
         text_en = ""
+        clean = ""
         has_image = self._has_image(post)
         if post.text.strip():
             # 素材优先用文章正文（数字、引用都在里面）；拿不到才退回 RSS 摘要
@@ -483,14 +487,27 @@ class Pipeline:
             return "skipped"
 
         item = TransPost(post=post, text_en=text_en)
-        # 媒体优先级：图表池 → 文章视频 → 文章图 → 纯文字
+        # 0) 自制数据图：稿子里的数字直接画一张（最稳的"有数字"配图）
+        if self.chart_gen and not self.publisher.dry_run and text_en.strip():
+            try:
+                spec = chartgen.spec_from_text(self.writer._chat, clean or post.text, text_en)
+                if spec:
+                    png = chartgen.render(spec)
+                    pub = media_mod.upload_bytes(png, ".png")
+                    if pub:
+                        post.media_urls = [pub]
+                        log.info("配图：自制数据图 %s（%d 条）", spec.get("title", "")[:40],
+                                 len(spec.get("items") or []))
+            except Exception as e:  # noqa: BLE001
+                log.warning("自制数据图失败（改用截图/文章图）：%s", str(e)[:120])
+        # 媒体优先级：自制图 → 图表池 → 文章视频 → 文章图 → 纯文字
         chart = None
         if self.chart_first and not self.publisher.dry_run and post.text.strip():
             chart = charts_mod.pick(post.text, self.chart_min_score, self.chart_max_age)
             if not chart:
                 log.info("图表池没有和这条同源的图（同代码/同公司 + %.0f 天内），用文章自己的图",
                          self.chart_max_age)
-        used_chart = bool(chart) and self._attach_chart(post, chart)
+        used_chart = bool(post.media_urls) or (bool(chart) and self._attach_chart(post, chart))
         if not used_chart:
             kind, img, vid = self._media_of(post)
             if kind == "video" and vid:
