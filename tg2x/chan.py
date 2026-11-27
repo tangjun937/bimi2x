@@ -227,7 +227,7 @@ def analyze(symbol: str) -> dict | None:
     }
 
 
-def render(a: dict, lookback: int = 90) -> bytes:
+def render(a: dict, lookback: int = 90, source: str = "Yahoo Finance daily bars") -> bytes:
     bs = a["bars"][-lookback:]
     t0 = len(a["bars"]) - len(bs)
     img = Image.new("RGB", (W, H), BG)
@@ -289,7 +289,7 @@ def render(a: dict, lookback: int = 90) -> bytes:
         d.text((x_of(first) + 6, y_of(zg) - 24),
                f"centre {zd:.2f}–{zg:.2f}", font=_font(18, True), fill=CENTRE)
 
-    d.text((56, H - 46), f"signal: {a['signal']}   ·   source: Yahoo Finance daily bars",
+    d.text((56, H - 46), f"signal: {a['signal']}   ·   source: {source}",
            font=_font(19), fill=MUTED)
 
     buf = io.BytesIO()
