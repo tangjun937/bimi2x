@@ -500,6 +500,21 @@ def _upgrade_google(img: str) -> str:
     return re.sub(r"=s0-w\d+-rw", "=s0-w1200-rw", img)
 
 
+def upload_bytes(data: bytes, ext: str = ".png") -> str:
+    """上传一段内存里的图（自制图表用）：去重 → 提交仓库 → 返回 raw 直链。"""
+    if not data:
+        return ""
+    digest = hashlib.sha1(data).hexdigest()[:12]
+    if _seen_before(digest):
+        log.info("这张图和最近 %d 天用过的重复（%s），这次不配图", _USED_DAYS, digest[:6])
+        return ""
+    pub = upload(data, ext)
+    if not pub:
+        return ""
+    _remember(digest)
+    return pub
+
+
 def attach_image_url(url: str) -> str:
     """把一个已经确定好的图片 URL 挂上去：下载 → 去重 → 提交仓库。返回公网直链。
 
