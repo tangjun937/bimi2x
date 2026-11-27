@@ -47,6 +47,16 @@ _FIND_JS = """
 })()
 """ % (MIN_W, MIN_H)
 
+_SELECTOR_JS = """
+(() => {
+  const e = document.querySelector(%r);
+  if (!e) return "null";
+  const r = e.getBoundingClientRect();
+  return JSON.stringify({tag: e.tagName, x: r.x + window.scrollX, y: r.y + window.scrollY,
+                         w: r.width, h: r.height});
+})()
+"""
+
 
 def _edge() -> str:
     for p in EDGE_CANDIDATES:
@@ -108,7 +118,22 @@ class _CDP:
             pass
 
 
-def _capture_once(url: str, wait: float = 6.0, timeout: int = 40) -> bytes:
+def _too_blank(png: bytes, ratio: float = 0.9) -> bool:
+    """九成以上像素接近纯白就判废（图表没渲染）。深色主题不受影响。"""
+    try:
+        import io
+
+        from PIL import Image
+        im = Image.open(io.BytesIO(png)).convert("RGB").resize((64, 64))
+        px = list(im.getdata())
+        white = sum(1 for r, g, b in px if r > 240 and g > 240 and b > 240)
+        return white / len(px) > ratio
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _capture_once(url: str, wait: float = 6.0, timeout: int = 40,
+                  selector: str = "") -> bytes:
     """截页面里最大的一块图（图表/表格）。失败返回 b""。"""
     exe = _edge()
     if not exe or not url.startswith("http"):
@@ -120,8 +145,10 @@ def _capture_once(url: str, wait: float = 6.0, timeout: int = 40) -> bytes:
             "--remote-allow-origins=*",
             "--window-size=1400,2400", "about:blank"]
     proxy = (os.environ.get("TG2X_PROXY") or "").strip()
-    if proxy:
+    local = url.startswith("http://127.0.0.1") or url.startswith("http://localhost")
+    if proxy and not local:
         args.insert(1, f"--proxy-server={proxy}")
+        args.insert(2, "--proxy-bypass-list=<-loopback>")
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         ws = _wait_ws()
@@ -136,7 +163,8 @@ def _capture_once(url: str, wait: float = 6.0, timeout: int = 40) -> bytes:
         try:
             cdp.call("Page.enable")
             time.sleep(wait)                    # 等首屏脚本
-            res = cdp.call("Runtime.evaluate", expression=_FIND_JS, returnByValue=True)
+            js = (_SELECTOR_JS % selector) if selector else _FIND_JS
+            res = cdp.call("Runtime.evaluate", expression=js, returnByValue=True)
             raw = ((res.get("result") or {}).get("value")) or ""
             box = json.loads(raw) if raw else None
             if not box:
@@ -147,7 +175,7 @@ def _capture_once(url: str, wait: float = 6.0, timeout: int = 40) -> bytes:
                      expression="window.scrollTo(0, %d);" % max(0, int(box["y"]) - 120),
                      returnByValue=True)
             time.sleep(2.5)
-            res2 = cdp.call("Runtime.evaluate", expression=_FIND_JS, returnByValue=True)
+            res2 = cdp.call("Runtime.evaluate", expression=js, returnByValue=True)
             raw2 = ((res2.get("result") or {}).get("value")) or ""
             box2 = json.loads(raw2) if raw2 else None
             if box2 and box2["w"] * box2["h"] >= box["w"] * box["h"] * 0.5:
@@ -184,10 +212,12 @@ def _capture_once(url: str, wait: float = 6.0, timeout: int = 40) -> bytes:
         shutil.rmtree(profile, ignore_errors=True)   # 用完就关、临时目录也删掉
 
 
-def capture(url: str, wait: float = 6.0, timeout: int = 40) -> bytes:
+def capture(url: str, wait: float = 6.0, timeout: int = 40,
+            selector: str = "") -> bytes:
     """截一张图；第一次空白/失败就再开一次浏览器重试（用完都关掉）。"""
     for attempt in (1, 2):
-        data = _capture_once(url, wait=wait + (1.5 if attempt == 2 else 0), timeout=timeout)
+        data = _capture_once(url, wait=wait + (1.5 if attempt == 2 else 0),
+                             timeout=timeout, selector=selector)
         if data:
             return data
         log.debug("截图第 %d 次失败", attempt)
