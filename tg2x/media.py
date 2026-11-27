@@ -432,14 +432,20 @@ def upload(data: bytes, ext: str = ".jpg", timeout: int = 60) -> str:
             "content": base64.b64encode(data).decode(),
             "branch": BRANCH}
     s = _session()
-    try:
-        r = s.put(_api(path), headers={**_gh_headers(), "Content-Type": "application/json"},
-                  data=json.dumps(body).encode(), timeout=timeout)
-        if r.status_code not in (200, 201):
-            log.warning("图上传失败：HTTP %s %s", r.status_code, (r.text or "")[:120])
-            return ""
-    except Exception as e:  # noqa: BLE001
-        log.warning("图上传异常：%s", str(e)[:120])
+    last = ""
+    for attempt in range(3):                 # 代理偶尔抖，重试三次
+        try:
+            r = s.put(_api(path), headers={**_gh_headers(), "Content-Type": "application/json"},
+                      data=json.dumps(body).encode(), timeout=timeout)
+            if r.status_code in (200, 201):
+                last = ""
+                break
+            last = f"HTTP {r.status_code} {(r.text or '')[:100]}"
+        except Exception as e:  # noqa: BLE001
+            last = str(e)[:100]
+        time.sleep(1.5 * (attempt + 1))
+    if last:
+        log.warning("图上传失败：%s", last)
         return ""
 
     url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{path}"
