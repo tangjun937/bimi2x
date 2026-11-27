@@ -108,6 +108,8 @@ _BANNED_TEMPLATES = (
     "who pays?", "the payer is", "the payer, then, is", "the collector is",
     "what to watch", "keep an eye on", "next quarter, watch",
     "one thing is clear", "ultimately,",
+    "the real question", "it was never about", "the bottleneck is whoever",
+    "in a world where", "this is the tell",
 )
 
 
