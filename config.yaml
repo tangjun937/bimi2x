@@ -63,9 +63,11 @@ publish:
   # 自制数据图：把稿子里的数字画成柱状图（优先于截图/文章图）
   chart_gen: true
   # 自制数据图每天最多几张
-  chart_gen_per_day: 1
+  chart_gen_per_day: 4
   # 图片必须有数字：没有自制图也没有图表截图就换话题
   require_numeric_image: true
+  # 每天允许几篇「不带数字」的短文（长文永远必须有数字）
+  plain_short_per_day: 1
   chart_credit: true
   # 一致性硬条件：图表必须和稿件同一个主体（同 $代码 或同公司名），
   # 且是 10 天内发的，且分数够（同代码 +3 / 同公司 +2 / 同主题词 +1）。
