@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import mimetypes
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,8 @@ from .translator import Translator
 from .writer import NewsWriter, content_filter_reason
 
 log = logging.getLogger("tg2x")
+
+_ROLES = ("long_chart", "chan", "chart", "plain", "text")
 
 _LONG_HINT = ("MODE: LONG COLUMN. Write the full piece for this story: every number in the "
               "source that matters, the mechanism in plain words, and who ends up holding the "
@@ -246,6 +249,24 @@ class Pipeline:
         n = int(self.store.get_meta(f"pub_{day}_plain", "0") or 0) + 1
         self.store.set_meta(f"pub_{day}_plain", str(n))
 
+    def _role_today(self) -> str:
+        """当天第 N 篇的角色：缠论固定第二档，其余四档每天随机。"""
+        day, used, _ = self._daily_state()
+        raw = self.store.get_meta(f"pub_{day}_plan", "")
+        plan = None
+        if raw:
+            try:
+                plan = json.loads(raw)
+            except Exception:
+                plan = None
+        if not plan:
+            others = [r for r in _ROLES if r != "chan"]
+            random.shuffle(others)
+            plan = [others[0], "chan", others[1], others[2], others[3]]
+            self.store.set_meta(f"pub_{day}_plan", json.dumps(plan))
+            log.info("今日配方：%s", " → ".join(plan))
+        return plan[used] if used < len(plan) else ""
+
     def _chart_used_today(self) -> bool:
         day, _used, _long = self._daily_state()
         return int(self.store.get_meta(f"pub_{day}_chart", "0") or 0) >= self.chart_gen_per_day
@@ -308,14 +329,17 @@ class Pipeline:
         if self.daily_max and used >= self.daily_max:
             log.info("今日配额已满（%d/%d），本轮不发", used, self.daily_max)
             return result
+        role = self._role_today()
+        if role == "chan":
+            return self._chan_cycle(publish)
+        self._role = role
         slot = self._slot_now()
         if (self.slot_gate and publish
                 and not getattr(self.publisher, "dry_run", False) and not slot):
             log.info("不在发布档位（%s 现在的 %s），本轮不发",
                      self.slots_tz, self._now_in_tz().strftime("%H:%M"))
             return result
-        long_mode = bool(self.long_per_day and not long_used and slot
-                         and self.long_slot and slot == self.long_slot)
+        long_mode = (role == "long_chart")
         if long_mode:
             log.info("今日长文档（%s %s）：这一篇按长文写（配额 %d/%d）",
                      self.slots_tz, slot, used, self.daily_max)
@@ -453,6 +477,59 @@ class Pipeline:
         except Exception:  # noqa: BLE001
             return False
 
+    def _chan_cycle(self, publish: bool = True) -> dict:
+        """缠论档：随机选一只热门票，按缠论画图（笔/中枢/信号）并写成一篇。"""
+        from . import chan as chan_mod
+        result = {"fetched": 0, "new": 0, "published": 0, "failed": 0, "skipped": 0}
+        if not publish or getattr(self.publisher, "dry_run", False):
+            return result
+        day = self._day_key()
+        try:
+            used = json.loads(self.store.get_meta(f"pub_{day}_syms", "[]") or "[]")
+        except Exception:
+            used = []
+        a = None
+        sym = ""
+        for _ in range(4):                 # 新股日线太短，换一只再试
+            sym = chan_mod.pick_symbol(tuple(used + [sym] if sym else used))
+            a = chan_mod.analyze(sym)
+            if a:
+                break
+            log.info("缠论：%s 日线不够，换一只", sym)
+        if not a:
+            log.info("缠论：连试 4 只都取不到日线，本轮跳过")
+            return result
+        png = chan_mod.render(a)
+        pub_url = media_mod.upload_bytes(png, ".png", dedupe=False)
+        if not pub_url:
+            log.warning("缠论：图上传失败，本轮跳过")
+            return result
+        mat = chan_mod.material(a)
+        text = self._write(mat, has_image=True)
+        if not text:
+            log.warning("缠论：写稿失败")
+            return result
+        text = self._enforce_style(mat, text, has_image=True)
+        text = _tidy_paragraphs(text)
+        post = TgPost(channel="chan", message_id=int(time.time()), text=mat, url="")
+        post.media_urls = [pub_url]
+        item = TransPost(post=post, text_en=text)
+        item.final_text = self.publisher.build_text(item)
+        res = self.publisher.publish(item)
+        if res.ok:
+            self._bump_daily(False)
+            self.store.set_meta(f"pub_{day}_syms", json.dumps(used + [sym]))
+            log.info("缠论 [%s] %s | tweet=%s", sym, text.replace("\n", " ")[:90], res.tweet_id)
+            result["published"] = 1
+        else:
+            log.error("缠论发布失败：%s", res.detail)
+            result["failed"] = 1
+        try:
+            self.notifier.report(result, [])
+        except Exception:
+            pass
+        return result
+
     def _handle(self, post: TgPost, ch: dict, publish: bool = True, position: int = 0,
                 long_mode: bool = False) -> str:
         """返回 published / skipped / failed 三种状态之一。"""
@@ -541,8 +618,9 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 log.warning("自制数据图失败：%s", str(e)[:120])
         # 截图不参与"数字图"判定（页面 canvas 是否真图表不可靠），只当普通配图兜底
-        allow_plain = (not long_mode) and not self._plain_used_today()
-        if (not numeric_img and self.require_numeric_image
+        allow_plain = (role == "plain") and not self._plain_used_today()
+        numeric_required = role in ("long_chart", "chart")
+        if (not numeric_img and numeric_required
                 and not allow_plain and not self.publisher.dry_run):
             log.info("跳过 [%s]：没有带数字的图（%s），换下一条", post.key,
                      "长文必须有数字" if long_mode else "今天的无数字名额已用完")
