@@ -31,11 +31,17 @@ MIN_W, MIN_H = 480, 220          # 太小的图不当图表
 
 _FIND_JS = """
 (() => {
-  const cands = [...document.querySelectorAll('img,canvas,svg')].map(e => {
+  const CH = /chart|graph|plot|highchart|tradingview|apexchart|echarts|canvasjs|gspread/i;
+  const name = e => String((e.className && e.className.baseVal !== undefined)
+                           ? e.className.baseVal : (e.className || "")) + " " + (e.id || "");
+  const chartish = e => { let n = e, d = 0;
+    while (n && d < 5) { if (CH.test(name(n))) return true; n = n.parentElement; d++; }
+    return false; };
+  const cands = [...document.querySelectorAll('canvas,svg')].map(e => {
     const r = e.getBoundingClientRect();
     return {tag: e.tagName, x: r.x + window.scrollX, y: r.y + window.scrollY,
-            w: r.width, h: r.height};
-  }).filter(o => o.w >= %d && o.h >= %d && o.y >= 0);
+            w: r.width, h: r.height, ok: chartish(e)};
+  }).filter(o => o.w >= %d && o.h >= %d && o.y >= 0 && o.ok);
   cands.sort((a, b) => (b.w * b.h) - (a.w * a.h));
   return JSON.stringify(cands[0] || null);
 })()
