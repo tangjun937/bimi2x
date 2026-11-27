@@ -76,6 +76,18 @@ _COMPANIES = (
 )
 
 
+def _tidy_paragraphs(text: str) -> str:
+    """把"从句子中间断开"的段落接回去：下一段以小写字母开头就并到上一段。"""
+    parts = [x.strip() for x in re.split(r"\n\s*\n", (text or "").strip()) if x.strip()]
+    out: list[str] = []
+    for part in parts:
+        if out and part[:1].islower():
+            out[-1] = out[-1].rstrip() + " " + part
+        else:
+            out.append(part)
+    return "\n\n".join(out)
+
+
 def _word_count(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9$'’]+", text or ""))
 
@@ -465,6 +477,7 @@ class Pipeline:
             # 风格硬要求：股票代码 / cashtag / 没图别写长（不合规就定向重写）
             text_en = self._enforce_style(clean, text_en, has_image,
                                           mode_fix=kwargs.get("fix", ""))
+            text_en = _tidy_paragraphs(text_en)
         # 统一品牌前缀（如 "FinBrief Alert: "）
         prefix = self.cfg.get("translate.prefix", "") or ""
         if prefix and text_en and not text_en.startswith(prefix.rstrip()):
