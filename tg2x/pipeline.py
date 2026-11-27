@@ -33,7 +33,7 @@ from .writer import NewsWriter, content_filter_reason
 
 log = logging.getLogger("tg2x")
 
-_ROLES = ("long_chart", "chan", "chart", "plain", "text")
+_ROLES = ("long_chart", "chart", "chart", "plain", "text")
 
 _LONG_HINT = ("MODE: LONG COLUMN. Write the full piece for this story: every number in the "
               "source that matters, the mechanism in plain words, and who ends up holding the "
@@ -224,6 +224,8 @@ class Pipeline:
         self.draft_only = bool(cfg.get("publish.draft_only", False))
         # FRED 宏观序列（有 FRED_API_KEY 时启用）
         self.fred_enabled = bool(cfg.get("publish.fred", True))
+        # 选题改成数据驱动：从 FRED 里挑变动最大的序列（不再用关键词搜新闻）
+        self.data_topics = bool(cfg.get("publish.data_topics", True))
         self.draft_dir = Path(cfg.path_of("publish.draft_dir", "data/drafts"))
         self._mkt_cache: dict[str, str] = {}
         # 图表池：优先挂对标账号（@RyanDetrick / @charliebilello …）的图表，
@@ -313,9 +315,11 @@ class Pipeline:
             except Exception:
                 plan = None
         if not plan:
-            others = [r for r in _ROLES if r != "chan"]
-            random.shuffle(others)
-            plan = [others[0], "chan", others[1], others[2], others[3]]
+            base = ["long_chart", "plain", "text"]
+            if random.random() < 0.5:      # 第 3 类（短文带数字图）随机出现
+                base.append("chart")
+            plan = base
+            random.shuffle(plan)
             self.store.set_meta(f"pub_{day}_plan", json.dumps(plan))
             log.info("今日配方：%s", " → ".join(plan))
         return plan[used] if used < len(plan) else ""
@@ -383,9 +387,17 @@ class Pipeline:
             log.info("今日配额已满（%d/%d），本轮不发", used, self.daily_max)
             return result
         role = self._role_today()
-        if role == "chan":
-            return self._chan_cycle(publish)
         self._role = role
+        # 队列优先：今晚排了稿子，常规流程不插手，免得重复发
+        try:
+            from . import queue as queue_mod
+            if queue_mod.has_pending_within(12):
+                log.info("队列里有待发稿，本轮主流程跳过")
+                return {"fetched": 0, "new": 0, "published": 0, "failed": 0, "skipped": 0}
+        except Exception:  # noqa: BLE001
+            pass
+        if self.data_topics:
+            return self._data_cycle(publish)
         slot = self._slot_now()
         if (self.slot_gate and publish
                 and not getattr(self.publisher, "dry_run", False) and not slot):
@@ -576,6 +588,80 @@ class Pipeline:
             result["published"] = 1
         else:
             log.error("缠论发布失败：%s", res.detail)
+            result["failed"] = 1
+        try:
+            self.notifier.report(result, [])
+        except Exception:
+            pass
+        return result
+
+    def _data_cycle(self, publish: bool = True) -> dict:
+        """数据档：从 FRED 里挑最近变动最大的序列，写一条，配它的官方数据折线图。"""
+        from . import fred as fred_mod
+        result = {"fetched": 0, "new": 0, "published": 0, "failed": 0, "skipped": 0}
+        if not publish or getattr(self.publisher, "dry_run", False) or self.draft_only:
+            return result
+        day = self._day_key()
+        try:
+            used = json.loads(self.store.get_meta(f"pub_{day}_fred", "[]") or "[]")
+        except Exception:
+            used = []
+        pool = [m for m in fred_mod.movers(top=8) if m[1] not in used]
+        if not pool:
+            log.info("FRED：今天能用的序列都用过了")
+            return result
+        pct, sid, name, unit, desc = pool[0]
+        mat, note = fred_mod.build_material(sid, name, unit, desc)
+        try:
+            from . import quotes as quotes_mod
+            today_line = quotes_mod.today_yields()
+            if today_line:
+                mat += " Same-day market data: " + today_line
+        except Exception as e:  # noqa: BLE001
+            log.debug("当天行情补充失败：%s", str(e)[:80])
+        if not mat:
+            return result
+        role = getattr(self, "_role", "text")
+        long_mode = role == "long_chart"
+        need_img = role in ("long_chart", "chart")
+        text = self._write(mat, has_image=need_img,
+                           fix=_LONG_HINT if long_mode else _SHORT_HINT)
+        if not text:
+            return result
+        text = _tidy_paragraphs(text)
+        # 防编数：稿子里出现素材没有的数字，就用同样素材重写一次
+        bad = _unsourced_numbers(mat, text)
+        if bad:
+            log.info("数据档有 %d 个无来源数字，重写一次：%s", len(bad), ", ".join(bad[:6]))
+            fix = ("Use only the numbers that appear in the material; these are not in it: "
+                   + ", ".join(bad[:8]) + ". Rewrite the whole piece without them.")
+            again = self._write(mat, has_image=need_img, fix=fix)
+            if again:
+                text = _tidy_paragraphs(again)
+                bad = _unsourced_numbers(mat, text)
+            if bad:
+                log.warning("数据档仍有 %d 个无来源数字，仍按现稿处理", len(bad))
+        img = ""
+        if need_img:
+            png = fred_mod.render(sid, name, unit)
+            if png:
+                img = media_mod.upload_bytes(png, ".png", dedupe=False)
+            if not img:
+                log.info("FRED：%s 画不出图，换下一条", sid)
+                return result
+        post = TgPost(channel="data", message_id=int(time.time()), text=mat, url="")
+        if img:
+            post.media_urls = [img]
+        item = TransPost(post=post, text_en=text)
+        item.final_text = self.publisher.build_text(item)
+        res = self.publisher.publish(item)
+        if res.ok:
+            self._bump_daily(long_mode)
+            self.store.set_meta(f"pub_{day}_fred", json.dumps(used + [sid]))
+            log.info("数据档 [%s] %s | tweet=%s", sid, note, res.tweet_id)
+            result["published"] = 1
+        else:
+            log.error("数据档发布失败：%s", res.detail)
             result["failed"] = 1
         try:
             self.notifier.report(result, [])
